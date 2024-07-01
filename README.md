@@ -8,6 +8,8 @@
 ## Related work
 - Bayesian LoRA ([paper](https://openreview.net/pdf?id=FJiUyzOF1m#subsection.E.1)) ([github](https://github.com/MaximeRobeyns/bayesian_lora/tree/master))
     - Trains using a Laplace approximation to the posterior over LoRA parameters.
+- (On Stein Variational Neural Network Ensembles)[https://arxiv.org/pdf/2106.10760]
+    - Explores how to apply SVGD succesfully on neural networks, suggesting a variety of potentially useful kernels.
 
 ## Questions
 - How will Stein be affected by the fact that LoRA weights are invariant to permutations (in the typical NN neuron-permutation sense)
