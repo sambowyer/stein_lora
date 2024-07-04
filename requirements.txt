@@ -1,5 +1,10 @@
-torch
+torch==2.0.1
 transformers
 datasets
 peft
+evaluate
+accelerate
+deepspeed
 tqdm
+scikit-learn
+scipy
