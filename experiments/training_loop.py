@@ -1,12 +1,13 @@
-import torch 
+import torch as t
 from datasets import load_dataset
-from transformers import AutoTokenizer, DataCollatorWithPadding, AdamW, AutoModelForSequenceClassification, get_scheduler
+from transformers import AutoTokenizer, DataCollatorWithPadding, AutoModelForSequenceClassification, get_scheduler
 import evaluate
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from peft import LoraConfig, get_peft_model
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}")
 
 
@@ -41,6 +42,12 @@ model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_label
 lora_config = LoraConfig(r=4,)
 peft_model = get_peft_model(model, lora_config)
 
+# breakpoint()
+
+peft_model.print_trainable_parameters()
+breakpoint()
+
+
 optimizer = AdamW(peft_model.parameters(), lr=3e-5)
 
 peft_model.to(device)
@@ -54,6 +61,8 @@ lr_scheduler = get_scheduler(
     num_training_steps=num_training_steps,
 )
 
+K = 3
+
 
 # breakpoint() 
 
@@ -61,27 +70,34 @@ metric = evaluate.load("glue", "mrpc")
 
 def run_eval(model, eval_dataloader, metric):
 
-    peft_model.eval()
     for batch in eval_dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
+
+        with t.no_grad():
             outputs = model(**batch)
 
         logits = outputs.logits
-        predictions = torch.argmax(logits, dim=-1)
+        predictions = t.argmax(logits, dim=-1)
         metric.add_batch(predictions=predictions, references=batch["labels"])
 
     print(metric.compute())
 
 
-peft_model.train()
 for epoch in range(num_epochs):
     print(f"Epoch {epoch}")
     progress_bar = tqdm(range(len(train_dataloader)))
 
     for batch in train_dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        outputs = peft_model(**batch)
+        # breakpoint()
+        # batch = {k: v.to(device)[..., None].expand(*v.shape, K) for k, v in batch.items()}
+
+        # breakpoint()
+        try:
+            outputs = peft_model(**batch)
+        except Exception as e:
+            print(e)
+            breakpoint()
         loss = outputs.loss
         loss.backward()
 

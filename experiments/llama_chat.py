@@ -1,18 +1,22 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+import os 
 
+access_token = os.environ.get("HF_TOKEN")
+# model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 
-tokenizer = AutoTokenizer.from_pretrained(model_id)
+tokenizer = AutoTokenizer.from_pretrained(model_id, token=access_token)
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
-    torch_dtype=torch.bfloat16,
+    # torch_dtype=torch.bfloat16,
     device_map="auto",
+    token=access_token
 )
 
 print(model.device)
 
-breakpoint()
+# breakpoint()
 
 messages = [
     {"role": "system", "content": "You are a pirate chatbot who always responds in pirate speak!"},
