@@ -6,6 +6,11 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from peft import LoraConfig, get_peft_model
+import peft
+
+from stein_lora import MultiLoraConfig, MultiLoraModel
+
+peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING['MultiLORA'] = MultiLoraModel
 
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}")
@@ -36,23 +41,26 @@ eval_dataloader = DataLoader(
 )
 
 
-
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
-lora_config = LoraConfig(r=4,)
+K = 3
+
+
+# lora_config = LoraConfig(r=4,)
+lora_config = MultiLoraConfig(r=4, K=K)
 peft_model = get_peft_model(model, lora_config)
 
 # breakpoint()
 
 peft_model.print_trainable_parameters()
-breakpoint()
+
 
 
 optimizer = AdamW(peft_model.parameters(), lr=3e-5)
 
 peft_model.to(device)
 
-num_epochs = 3
+num_epochs = 2
 num_training_steps = num_epochs * len(train_dataloader)
 lr_scheduler = get_scheduler(
     "linear",
@@ -61,10 +69,9 @@ lr_scheduler = get_scheduler(
     num_training_steps=num_training_steps,
 )
 
-K = 3
 
 
-# breakpoint() 
+breakpoint() 
 
 metric = evaluate.load("glue", "mrpc")
 

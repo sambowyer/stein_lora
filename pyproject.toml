@@ -1,0 +1,78 @@
+# Package =====================================================================
+
+[build-system]
+requires = ["setuptools >= 61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stein_lora"
+version = "0.0.1"
+description = "Stein VI-trained LoRA adapters for Language Models"
+authors = [
+    {name = "Sam Bowyer", email = "sambowyer2@gmail.com" },
+]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["Bayes", "LLM", "LoRA", "machine learning", "uncertainty"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Minimal dependencies 
+dependencies = [
+    "peft>=0.5.0",
+    "transformers>=4.37.2",
+    "torch",
+]
+
+[project.optional-dependencies]
+# Dependencies for running the examples and tests
+examples = [
+    "datasets>=2.16.1",
+    "hydra-core>=1.2.0, <2.0",
+    "omegaconf>=2.3.0",
+    "torchmetrics>=1.2.0",
+    "pytest>=7.2.0",
+    "bitsandbytes",
+    "tqdm",
+    "evaluate",
+    "accelerate",
+    "deepspeed",
+    "scikit-learn",
+    "scipy",
+]
+# Other miscellaneous dev tools
+dev = [
+    "ipywidgets>=8.0.4",
+    "jupyterlab>=3.5, <3.6",
+    "jupyterlab-vim",
+    "jupyterlab-vimrc",
+    "mypy>=0.990,<=1.0",
+    "tensorboard>=2.11.2, <3.0",
+]
+# Doc writing
+docs = [
+    "furo>=2022.9.29",
+    "sphinx-autobuild>=2021.3.14",
+    "sphinx-copybutton>=0.5.1",
+    "sphinxext-opengraph>=0.7.2",
+]
+all = ["stein_lora[examples]", "stein_lora[dev]", "stein_lora[docs]"]
+
+[project.urls]
+Repository = "https://github.com/sambowyer/stein_lora"
+
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["stein_lora", "stein_lora/*"]
+
+

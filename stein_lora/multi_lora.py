@@ -13,6 +13,8 @@ from peft.utils import PeftType, get_quantization_config
 from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer 
 from peft.tuners.lora import LoraModel, LoraLayer, LoraConfig
 
+__all__ = ["MultiLoraConfig", "MultiLoraModel", "MultiLoraLayer", "Linear", "nn_ParallelLinear"]
+
 
 @dataclass
 class MultiLoraConfig(LoraConfig):
@@ -27,6 +29,11 @@ class MultiLoraConfig(LoraConfig):
             Additional keyword arguments passed along to the base [`LoraConfig`] class.
     """
     K: int = field(default=3, metadata={"help": "The number of LoRA copies/`particles` to train in parallel."})
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.peft_type = "MultiLORA"
+
 
 class MultiLoraModel(LoraModel):
     """
@@ -95,33 +102,24 @@ class MultiLoraModel(LoraModel):
         # note: AdaLoraLayer is a subclass of LoraLayer, we need to exclude it
         # from peft.tuners.adalora import AdaLoraLayer
 
-        # if isinstance(target, LoraLayer) and not isinstance(target, AdaLoraLayer):
-        #     target.update_layer(
-        #         adapter_name,
-        #         r,
-        #         lora_alpha=alpha,
-        #         lora_dropout=lora_config.lora_dropout,
-        #         init_lora_weights=lora_config.init_lora_weights,
-        #         use_rslora=lora_config.use_rslora,
-        #         use_dora=lora_config.use_dora,
-        #     )
-        # else:
-        #     new_module = self._create_new_module(lora_config, adapter_name, target, **kwargs)
-        #     if adapter_name not in self.active_adapters:
-        #         # adding an additional adapter: it is not automatically trainable
-        #         new_module.requires_grad_(False)
-        #     self._replace_module(parent, target_name, new_module, target)
-
-        target.update_layer(
-            adapter_name,
-            K,
-            r,
-            lora_alpha=alpha,
-            lora_dropout=lora_config.lora_dropout,
-            init_lora_weights=lora_config.init_lora_weights,
-            use_rslora=lora_config.use_rslora,
-            use_dora=lora_config.use_dora,
-        )
+        if isinstance(target, MultiLoraLayer): # and not isinstance(target, AdaLoraLayer):
+            target.update_layer(
+                adapter_name,
+                K,
+                r,
+                lora_alpha=alpha,
+                lora_dropout=lora_config.lora_dropout,
+                init_lora_weights=lora_config.init_lora_weights,
+                use_rslora=lora_config.use_rslora,
+                use_dora=lora_config.use_dora,
+            )
+        else:
+            new_module = self._create_new_module(lora_config, adapter_name, target, **kwargs)
+            if adapter_name not in self.active_adapters:
+                # adding an additional adapter: it is not automatically trainable
+                new_module.requires_grad_(False)
+            self._replace_module(parent, target_name, new_module, target)
+        
 
     @staticmethod
     def _create_new_module(lora_config, adapter_name, target, **kwargs):
@@ -150,6 +148,9 @@ class MultiLoraLayer(LoraLayer):
         self, adapter_name, K, r, lora_alpha, lora_dropout, init_lora_weights, use_rslora, use_dora: bool = False
     ):
         # This code works for linear layers, override for other layer types
+
+        if K <= 0:
+            raise ValueError(f"`K` should be a positive integer value but the value passed is {K}")
         if r <= 0:
             raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
 
@@ -214,12 +215,14 @@ class Linear(nn.Module, MultiLoraLayer):
         **kwargs,
     ) -> None:
         super().__init__()
-        LoraLayer.__init__(self, base_layer, **kwargs)
+        MultiLoraLayer.__init__(self, base_layer, **kwargs)
         self.fan_in_fan_out = fan_in_fan_out
 
         self._active_adapter = adapter_name
+
         self.update_layer(
             adapter_name,
+            K,
             r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
@@ -301,8 +304,20 @@ class nn_ParallelLinear(nn.Module):
             self.register_parameter('bias', None)
         self.reset_parameters()
 
+    def reset_parameters(self) -> None:
+        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
+        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
+        # https://github.com/pytorch/pytorch/issues/57109
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("bik,ijk->bjk", input, self.weight) + self.bias
+        # breakpoint()
+        # TODO: allow for biases
+        return torch.einsum("bij,ljk->bjk", input, self.weight) # + self.bias
         # return F.linear(input, self.weight, self.bias)
 
     def extra_repr(self) -> str:
