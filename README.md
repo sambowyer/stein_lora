@@ -19,6 +19,7 @@
 
 ## TODO
 - Get paralell LoRA adapters working
+    - Check param initialisation is sensible
 - Get baselines working and reproduce previous LoRA results
 - Dig out papers that make stein more reasonable:
     - kernels not necessarily in weight-space, instead on NN outputs or gradients etc.

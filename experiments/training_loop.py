@@ -43,7 +43,7 @@ eval_dataloader = DataLoader(
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
-K = 3
+K = 5
 r = 4
 
 # lora_config = LoraConfig(r=r,)
@@ -56,11 +56,11 @@ peft_model.print_trainable_parameters()
 
 
 
-optimizer = AdamW(peft_model.parameters(), lr=3e-5)
+optimizer = AdamW(peft_model.parameters(), lr=1e-3)
 
 peft_model.to(device)
 
-num_epochs = 2
+num_epochs = 10
 num_training_steps = num_epochs * len(train_dataloader)
 lr_scheduler = get_scheduler(
     "linear",
@@ -73,21 +73,26 @@ lr_scheduler = get_scheduler(
 
 breakpoint() 
 
-metric = evaluate.load("glue", "mrpc")
+metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
 
-def run_eval(model, eval_dataloader, metric):
+def run_eval(model, eval_dataloader, metrics):
 
     for batch in eval_dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
 
         with t.no_grad():
             outputs = model(**batch)
 
         logits = outputs.logits
+        logits = logits.reshape(K, -1, *logits.shape[1:])
+        # breakpoint()
         predictions = t.argmax(logits, dim=-1)
-        metric.add_batch(predictions=predictions, references=batch["labels"])
 
-    print(metric.compute())
+        for i, m in enumerate(metrics):
+            m.add_batch(predictions=predictions[i], references=batch["labels"].reshape(K, -1)[i])
+
+    for i, m in enumerate(metrics):
+        print(f"LORA_{i}: {m.compute()}")
 
 
 for epoch in range(num_epochs):
@@ -95,16 +100,10 @@ for epoch in range(num_epochs):
     progress_bar = tqdm(range(len(train_dataloader)))
 
     for batch in train_dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
-        # breakpoint()
-        # batch = {k: v.to(device)[..., None].expand(*v.shape, K) for k, v in batch.items()}
+        batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
 
         # breakpoint()
-        try:
-            outputs = peft_model(**batch)
-        except Exception as e:
-            print(e)
-            breakpoint()
+        outputs = peft_model(**batch)
         loss = outputs.loss
         loss.backward()
 
@@ -116,4 +115,4 @@ for epoch in range(num_epochs):
     progress_bar.refresh()
     progress_bar.close()
 
-    run_eval(peft_model, eval_dataloader, metric)
+    run_eval(peft_model, eval_dataloader, metrics)

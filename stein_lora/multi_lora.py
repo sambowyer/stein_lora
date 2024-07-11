@@ -299,9 +299,9 @@ class nn_ParallelLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.K = K
-        self.weight = nn.Parameter(torch.empty((out_features, in_features, K), **factory_kwargs))
+        self.weight = nn.Parameter(torch.empty((K, in_features, out_features), **factory_kwargs))
         if bias:
-            self.bias = nn.Parameter(torch.empty(out_features, K, **factory_kwargs))
+            self.bias = nn.Parameter(torch.empty(K, out_features, **factory_kwargs))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
@@ -317,10 +317,25 @@ class nn_ParallelLinear(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        # breakpoint()
-        # TODO: allow for biases
-        return torch.einsum("bij,ljk->bjk", input, self.weight) # + self.bias
-        # return F.linear(input, self.weight, self.bias)
+        # assume at start we have:
+        # input.shape == [K * batch, seq_length, in_features]
+        # weight.shape == [K, in_features, out_features]
+        #
+        # before matmul, we want to change input s.t.:
+        # input.shape == [K, batch, seq_length, in_features]
+        # 
+        # then matmul of input @ weight will give us:
+        # output.shape == [K, batch, seq_length, out_features]
+        # 
+        # but before we return, we want to reshape the output to:
+        # output.shape == [batch * K, seq_length, out_features]
+
+        batch_size = input.shape[0] // self.K
+        seq_length = input.shape[1]
+
+        out = input.reshape(self.K, batch_size, *input.shape[1:]) @ self.weight[:, None, ...]
+
+        return out.reshape(self.K * batch_size, seq_length, self.out_features)
 
     def extra_repr(self) -> str:
         return 'in_features={}, out_features={}, K={}, bias={}'.format(
