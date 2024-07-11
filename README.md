@@ -15,6 +15,7 @@
 - How will Stein be affected by the fact that LoRA weights are invariant to permutations (in the typical NN neuron-permutation sense)
     - SVD seems reasonable at first, but might lead to permutation invariance if two or more singular values are very similar (they might then be able to 'swap' without much effect on output)
     - maybe similarity/kernel of big matrix will be easier to work with (and invariant to permuations of LoRA small matrices)
+    - OR do kernel on the full lora updates $\Delta W = A B$, as these will be permutation-free AND we can probably compute such a kernel without having to ever fully realise the big update matrix.
 
 ## TODO
 - Get paralell LoRA adapters working
