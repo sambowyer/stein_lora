@@ -8,7 +8,7 @@
 ## Related work
 - Bayesian LoRA ([paper](https://openreview.net/pdf?id=FJiUyzOF1m#subsection.E.1)) ([github](https://github.com/MaximeRobeyns/bayesian_lora/tree/master))
     - Trains using a Laplace approximation to the posterior over LoRA parameters.
-- [On Stein Variational Neural Network Ensembles](https://arxiv.org/pdf/2106.10760)
+- [On Stein Variational Neural Network Ensembles](https://arxiv.org/pdf/2106.10760) ([implementation here](https://github.com/Pascal314/SmalldataMNIST))
     - Explores how to apply SVGD succesfully on neural networks, suggesting a variety of potentially useful kernels.
 
 ## Questions
