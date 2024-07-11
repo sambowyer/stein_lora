@@ -10,7 +10,7 @@ import peft
 
 from stein_lora import MultiLoraConfig, MultiLoraModel
 
-peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING['MultiLORA'] = MultiLoraModel
+# peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING['MultiLORA'] = MultiLoraModel
 
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}")
@@ -44,10 +44,10 @@ eval_dataloader = DataLoader(
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
 K = 3
+r = 4
 
-
-# lora_config = LoraConfig(r=4,)
-lora_config = MultiLoraConfig(r=4, K=K)
+# lora_config = LoraConfig(r=r,)
+lora_config = MultiLoraConfig(r=r, K=K)
 peft_model = get_peft_model(model, lora_config)
 
 # breakpoint()

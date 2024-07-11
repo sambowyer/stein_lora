@@ -8,9 +8,8 @@ import re
 import math
 from itertools import chain
 
-from peft.utils import PeftType, get_quantization_config
-
-from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer 
+from peft.utils import get_quantization_config
+from peft.tuners.tuners_utils import BaseTunerLayer 
 from peft.tuners.lora import LoraModel, LoraLayer, LoraConfig
 
 __all__ = ["MultiLoraConfig", "MultiLoraModel", "MultiLoraLayer", "Linear", "nn_ParallelLinear"]
@@ -34,6 +33,9 @@ class MultiLoraConfig(LoraConfig):
         super().__post_init__()
         self.peft_type = "MultiLORA"
 
+        from peft import peft_model
+        peft_model.PEFT_TYPE_TO_MODEL_MAPPING[self.peft_type] = MultiLoraModel
+
 
 class MultiLoraModel(LoraModel):
     """
@@ -56,7 +58,7 @@ class MultiLoraModel(LoraModel):
         - **peft_config** ([]`MultiLoraConfig`]): The configuration of the Multi-LoRA model.
     """
 
-    prefix: str = "multi_lora"
+    # prefix: str = "lora_"  # this is already inherited from LoraModel (we don't rename lora params from lora_A and lora_B to multi_lora_A and multi_lora_B)
 
     def __init__(self, model, config, adapter_name) -> None:
         super().__init__(model, config, adapter_name)
