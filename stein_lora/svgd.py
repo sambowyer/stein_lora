@@ -49,8 +49,8 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
     # lora_A_prior_grad = lora_A.weight
     # lora_B_prior_grad = lora_B.weight
 
-    lora_A_log_prior_grad = torch.ones((K,))
-    lora_B_log_prior_grad = torch.ones((K,))
+    lora_A_log_prior_grad = torch.zeros((K,))
+    lora_B_log_prior_grad = torch.zeros((K,))
 
     # # reset grads
     # lora_A.weight.grad.zero_()
@@ -65,9 +65,11 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
     for i in range(K):
         for j in range(K):
             kernel_val = kernel(adapter, i, j)
+
+            # breakpoint()
             
-            update_A[i].add_(-lr * (kernel_val * log_lik_grad_A[j] * lora_A_log_prior_grad[j] - (gamma/K)*lora_A.weight.grad[j]))
-            update_B[i].add_(-lr * (kernel_val * log_lik_grad_B[j] * lora_B_log_prior_grad[j] - (gamma/K)*lora_B.weight.grad[j]))
+            update_A[i].add_(-lr * (kernel_val * (log_lik_grad_A[j] + lora_A_log_prior_grad[j]) - (gamma/K)*lora_A.weight.grad[j]))
+            update_B[i].add_(-lr * (kernel_val * (log_lik_grad_B[j] + lora_B_log_prior_grad[j]) - (gamma/K)*lora_B.weight.grad[j]))
 
             # reset grads
             lora_A.weight.grad.zero_()

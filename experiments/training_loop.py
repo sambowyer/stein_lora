@@ -34,8 +34,10 @@ tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2"
 tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 
-truncate_train = 200
-truncate_val   = 100
+truncate_train = 500
+truncate_val   = 200
+
+
 
 train_dataloader = DataLoader(
     tokenized_datasets["train"].select(range(truncate_train)), shuffle=True, batch_size=8, collate_fn=data_collator
@@ -68,7 +70,7 @@ peft_model.print_trainable_parameters()
 
 # optimizer = AdamW(peft_model.parameters(), lr=1e-3)
 
-optimizer = SVGD(peft_model, lr=1e4, kernel= RBF_kernel(sigma=1e1), gamma=3e1)
+optimizer = SVGD(peft_model, lr=1e1, kernel= RBF_kernel(sigma=1e-2), gamma=3e1)
 
 peft_model.to(device)
 
@@ -87,6 +89,7 @@ peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = acceler
 # breakpoint() 
 
 metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
+metrics_avg = evaluate.load("glue", "mrpc")
 
 def run_eval(model, eval_dataloader, metrics):
 
@@ -98,12 +101,18 @@ def run_eval(model, eval_dataloader, metrics):
 
         logits = outputs.logits
         logits = logits.reshape(K, -1, *logits.shape[1:])
-        # breakpoint()
-        predictions = t.argmax(logits, dim=-1)
 
+        logits_avg = t.logsumexp(logits, dim=0) #- t.log(t.tensor(K, dtype=t.float32))
+
+        predictions = t.argmax(logits, dim=-1)
+        predictions_avg = t.argmax(logits_avg, dim=-1)
+
+        metrics_avg.add_batch(predictions=predictions_avg, references=batch["labels"].reshape(K, -1)[0])
+        
         for i, m in enumerate(metrics):
             m.add_batch(predictions=predictions[i], references=batch["labels"].reshape(K, -1)[i])
 
+    print(f"Total:  {metrics_avg.compute()}")
     for i, m in enumerate(metrics):
         print(f"LORA_{i}: {m.compute()}")
 
