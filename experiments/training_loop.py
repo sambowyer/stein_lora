@@ -34,26 +34,26 @@ tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2"
 tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 
-truncate_train = 500
-truncate_val   = 200
-
-
+truncate_train = 250
+truncate_val   = 300
+tokenized_datasets["train"] = tokenized_datasets["train"].select(range(truncate_train))
+tokenized_datasets["validation"] = tokenized_datasets["validation"].select(range(truncate_val))
 
 train_dataloader = DataLoader(
-    tokenized_datasets["train"].select(range(truncate_train)), shuffle=True, batch_size=8, collate_fn=data_collator
+    tokenized_datasets["train"], shuffle=True, batch_size=4, collate_fn=data_collator
 )
 eval_dataloader = DataLoader(
-    tokenized_datasets["validation"].select(range(truncate_val)), batch_size=8, collate_fn=data_collator
+    tokenized_datasets["validation"], batch_size=4, collate_fn=data_collator
 )
 
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
-K = 3
+K = 10
 r = 4
 
 # lora_config = LoraConfig(r=r,)
-lora_config = MultiLoraConfig(r=r, K=K)
+lora_config = MultiLoraConfig(r=r, K=K)#, init_lora_weights='pissa')
 peft_model = get_peft_model(model, lora_config)
 
 # breakpoint()
@@ -74,7 +74,7 @@ optimizer = SVGD(peft_model, lr=1e1, kernel= RBF_kernel(sigma=1e-2), gamma=3e1)
 
 peft_model.to(device)
 
-num_epochs = 3
+num_epochs = 5
 num_training_steps = num_epochs * len(train_dataloader)
 lr_scheduler = get_scheduler(
     "linear",
@@ -88,11 +88,16 @@ peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = acceler
 
 # breakpoint() 
 
-metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
-metrics_avg = evaluate.load("glue", "mrpc")
+# metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
+# metrics_avg = evaluate.load("glue", "mrpc")
 
-def run_eval(model, eval_dataloader, metrics):
 
+
+def run_eval(model, eval_dataloader, metrics=None):
+    acc_per_particle = t.zeros(K)
+    ensemble_acc = t.zeros(1)
+
+    model.eval()
     for batch in eval_dataloader:
         batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
 
@@ -107,20 +112,32 @@ def run_eval(model, eval_dataloader, metrics):
         predictions = t.argmax(logits, dim=-1)
         predictions_avg = t.argmax(logits_avg, dim=-1)
 
-        metrics_avg.add_batch(predictions=predictions_avg, references=batch["labels"].reshape(K, -1)[0])
+        ensemble_acc += t.sum(predictions_avg == batch["labels"].reshape(K, -1)[0])
+        acc_per_particle += t.sum(predictions == batch["labels"].reshape(K, -1), dim=-1)
+
+        # breakpoint()
+
+        # metrics_avg.add_batch(predictions=predictions_avg, references=batch["labels"].reshape(K, -1)[0])
         
-        for i, m in enumerate(metrics):
-            m.add_batch(predictions=predictions[i], references=batch["labels"].reshape(K, -1)[i])
+        # for i, m in enumerate(metrics):
+        #     m.add_batch(predictions=predictions[i], references=batch["labels"].reshape(K, -1)[i])
 
-    print(f"Total:  {metrics_avg.compute()}")
-    for i, m in enumerate(metrics):
-        print(f"LORA_{i}: {m.compute()}")
+    # print(f"Total:  {metrics_avg.compute()}")
+    # for i, m in enumerate(metrics):
+    #     print(f"LORA_{i}: {m.compute()}")
+
+    acc_per_particle /= len(eval_dataloader.dataset) * 1.0
+    ensemble_acc /= len(eval_dataloader.dataset) * 1.0
+
+    print(f"Acc per particle: {acc_per_particle}")
+    print(f"Ensemble acc: {ensemble_acc}")
 
 
 
-run_eval(peft_model, eval_dataloader, metrics)
+run_eval(peft_model, eval_dataloader)#, metrics)
 
 for epoch in range(num_epochs):
+    model.train()
     print(f"Epoch {epoch}")
     progress_bar = tqdm(range(len(train_dataloader)))
 
@@ -141,4 +158,4 @@ for epoch in range(num_epochs):
     progress_bar.refresh()
     progress_bar.close()
 
-    run_eval(peft_model, eval_dataloader, metrics)
+    run_eval(peft_model, eval_dataloader)#, metrics)

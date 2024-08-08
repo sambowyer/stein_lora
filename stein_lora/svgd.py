@@ -18,6 +18,8 @@ def MSD(adapter: MultiLoraLayer, i,j):
             torch.matmul(lora_B.weight[i_], lora_B.weight[j_].T)
             )
         )
+    # print(i,j)
+    # breakpoint()
     return (trace_computation(i, i) + trace_computation(j, j) - 2*trace_computation(i, j)) / (d_in * d_out)
 
 def RBF_kernel(sigma):
@@ -66,6 +68,8 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
         for j in range(K):
             kernel_val = kernel(adapter, i, j)
 
+            # print(f"kernel_val: {kernel_val}")
+
             # breakpoint()
             
             update_A[i].add_(-lr * (kernel_val * (log_lik_grad_A[j] + lora_A_log_prior_grad[j]) - (gamma/K)*lora_A.weight.grad[j]))
@@ -84,7 +88,7 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
     # if (update_B.data == 0).all():
     #     print("update_B all zero!")
 
-
+    # breakpoint()
     # apply update
     with torch.no_grad():
         lora_A.weight.add_(update_A)
