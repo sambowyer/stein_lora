@@ -1,7 +1,7 @@
 import torch
 from .multi_lora import MultiLoraLayer, nn_ParallelLinear
 
-def MSD(adapter: MultiLoraLayer, i,j):
+def MSD(adapter: MultiLoraLayer, i,j,e=-1):
     
     assert len(adapter.active_adapters) == 1
     active_adapter = adapter.active_adapters[0]
@@ -13,21 +13,32 @@ def MSD(adapter: MultiLoraLayer, i,j):
     d_out = lora_B.out_features
 
     def trace_computation(i_, j_):
-        return torch.trace(torch.matmul(
-            torch.matmul(lora_A.weight[j_].T, lora_A.weight[i_]),
-            torch.matmul(lora_B.weight[i_], lora_B.weight[j_].T)
-            )
-        )
+        AAt = torch.matmul(lora_A.weight[i_]  , lora_A.weight[j_].T)
+        BBt = torch.matmul(lora_B.weight[i_].T, lora_B.weight[j_])
+        # breakpoint()
+
+        return torch.dot(AAt.flatten(), BBt.flatten())
+
+        # return torch.trace(torch.matmul(
+        #     torch.matmul(lora_A.weight[j_].T, lora_A.weight[i_]),
+        #     torch.matmul(lora_B.weight[i_], lora_B.weight[j_].T)
+        #     )
+        # )
     # print(i,j)
     # breakpoint()
-    return (trace_computation(i, i) + trace_computation(j, j) - 2*trace_computation(i, j)) / (d_in * d_out)
+
+    # if e > 1:
+    #     breakpoint()
+
+    # return (trace_computation(i, i) + trace_computation(j, j) - 2*trace_computation(i, j)) / (d_in * d_out)
+    return (trace_computation(i, i) + trace_computation(j, j) - trace_computation(i, j) - trace_computation(j,i)) / (d_in * d_out)
 
 def RBF_kernel(sigma):
-    def kernel(adapter: MultiLoraLayer, i, j):
-        return torch.exp(-MSD(adapter, i, j) / (2*sigma**2))
+    def kernel(adapter: MultiLoraLayer, i, j,e=-1):
+        return torch.exp(-MSD(adapter, i, j,e) / (2*sigma**2))
     return kernel
 
-def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
+def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma, e=-1):
 
     assert len(adapter.active_adapters) == 1
     active_adapter = adapter.active_adapters[0]
@@ -46,13 +57,15 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
     # reset grads
     lora_A.weight.grad.zero_()
     lora_B.weight.grad.zero_()
+    # breakpoint()
 
     # # get log prior gradients
-    # lora_A_prior_grad = lora_A.weight
-    # lora_B_prior_grad = lora_B.weight
+    lora_A_log_prior_grad = 2*(lora_A.weight**2).sum((-1,-2)).sqrt().log()
+    lora_B_log_prior_grad = 2*(lora_B.weight**2).sum((-1,-2)).sqrt().log()
 
-    lora_A_log_prior_grad = torch.zeros((K,))
-    lora_B_log_prior_grad = torch.zeros((K,))
+    # (improper) uniform prior
+    # lora_A_log_prior_grad = torch.zeros((K,))
+    # lora_B_log_prior_grad = torch.zeros((K,))
 
     # # reset grads
     # lora_A.weight.grad.zero_()
@@ -62,14 +75,19 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
     # construct weight-update tensor
     update_A = torch.zeros_like(lora_A.weight)
     update_B = torch.zeros_like(lora_B.weight)
+
+    kernel_matrix = torch.zeros((K,K))
  
     # get evaluations and gradients of kernel
     for i in range(K):
         for j in range(K):
-            kernel_val = kernel(adapter, i, j)
+            kernel_val = kernel(adapter, i, j, e)
+            kernel_val.backward()
 
-            # print(f"kernel_val: {kernel_val}")
+            kernel_matrix[i,j] = kernel_val
+            # print(f"{e} kernel_val: {kernel_val}, MSD: {MSD(adapter, i, j, -1)}")
 
+            # if e > 1: breakpoint()
             # breakpoint()
             
             update_A[i].add_(-lr * (kernel_val * (log_lik_grad_A[j] + lora_A_log_prior_grad[j]) - (gamma/K)*lora_A.weight.grad[j]))
@@ -78,6 +96,8 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
             # reset grads
             lora_A.weight.grad.zero_()
             lora_B.weight.grad.zero_()
+
+    # if e > 1: breakpoint()
 
     # if (lora_A.weight.data == 0).all():
     #     print("lora_A   all zero!")
@@ -94,6 +114,10 @@ def svgd_step(adapter: MultiLoraLayer, kernel, lr, gamma):
         lora_A.weight.add_(update_A)
         lora_B.weight.add_(update_B)
 
+    # breakpoint()
+    # if e > 1:
+    #     breakpoint()
+
     # # reset grads
     # lora_A.weight.grad.zero_()
     # lora_B.weight.grad.zero_()
@@ -107,10 +131,13 @@ class SVGD(torch.optim.Optimizer):
         super(SVGD, self).__init__(model.parameters(), defaults)
         # self.param_groups = self.modules
 
+        self.step_count = 0
+
     def step(self, closure=None):
         for module in self.modules:
-            svgd_step(module, self.defaults['kernel'], self.defaults['lr'], self.defaults['gamma'])
-            
+            svgd_step(module, self.defaults['kernel'], self.defaults['lr'], self.defaults['gamma'], self.step_count)
+
+        self.step_count += 1            
         # breakpoint()
         # for group in self.param_groups:
         #     for p in group['params']:
