@@ -2,26 +2,57 @@ import torch as t
 from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorWithPadding, AutoModelForSequenceClassification, get_scheduler
 import evaluate
-from torch.optim import AdamW
+from torch.optim import AdamW, SGD
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from peft import LoraConfig, get_peft_model
 import peft
 from accelerate import Accelerator
+import argparse
+import time
+import pickle
 
-from stein_lora import MultiLoraConfig, MultiLoraModel, RBF_kernel, SVGD
+from stein_lora import MultiLoraConfig, MultiLoraModel, RBF_kernel, SVGD, SAdamW
+
+print(f"Start at: {time.asctime()}\n")
+start_time = time.time()
+
+argparser = argparse.ArgumentParser()
+argparser.add_argument("--model", type=str, default="bert-base-uncased")
+argparser.add_argument("--dataset_path", type=str, default="glue")
+argparser.add_argument("--dataset_name", type=str, default="mrpc")
+argparser.add_argument("--truncate_train", type=int, default=-1)
+argparser.add_argument("--truncate_val", type=int, default=-1)
+argparser.add_argument("--optimizer", type=str, default="adamw")
+argparser.add_argument("--lr", type=float, default=1e-3)
+argparser.add_argument("--num_epochs", type=int, default=10)
+argparser.add_argument("--batch_size", type=int, default=4)
+argparser.add_argument("--r", type=int, default=4)
+argparser.add_argument("--K", type=int, default=10)
+argparser.add_argument("--gamma", type=float, default=1e-1)
+argparser.add_argument("--sigma", type=float, default=1e-18)
+argparser.add_argument("--progress_bar", type=bool, default=False)
+argparser.add_argument("--save_results", type=bool, default=True)
+argparser.add_argument("--seed", type=int, default=42)
+args = argparser.parse_args()
+
+print(args)
+
+t.manual_seed(args.seed)
 
 # peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING['MultiLORA'] = MultiLoraModel
 
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
-print(f"Device: {device}")
+print(f"Device: {device}\n")
 
-accelerator = Accelerator()
+# accelerator = Accelerator()
 
-raw_datasets = load_dataset("glue", "mrpc")
-checkpoint = "bert-base-uncased"
+raw_datasets = load_dataset(args.dataset_path, args.dataset_name)
+checkpoint = args.model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
+# Note: we're only set up for MRPC right now
+assert args.dataset_name == "mrpc" and args.dataset_path == "glue"
 
 def tokenize_function(example):
     return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
@@ -34,23 +65,23 @@ tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2"
 tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 
-truncate_train = 250
-truncate_val   = 300
-tokenized_datasets["train"] = tokenized_datasets["train"].select(range(truncate_train))
-tokenized_datasets["validation"] = tokenized_datasets["validation"].select(range(truncate_val))
+if args.truncate_train > 0:
+    tokenized_datasets["train"] = tokenized_datasets["train"].select(range(args.truncate_train))
+if args.truncate_val > 0:
+    tokenized_datasets["validation"] = tokenized_datasets["validation"].select(range(args.truncate_val))
 
 train_dataloader = DataLoader(
-    tokenized_datasets["train"], shuffle=True, batch_size=4, collate_fn=data_collator
+    tokenized_datasets["train"], shuffle=True, batch_size=args.batch_size, collate_fn=data_collator
 )
 eval_dataloader = DataLoader(
-    tokenized_datasets["validation"], batch_size=4, collate_fn=data_collator
+    tokenized_datasets["validation"], batch_size=args.batch_size, collate_fn=data_collator
 )
 
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
-K = 10
-r = 4
+K = args.K
+r = args.r
 
 # lora_config = LoraConfig(r=r,)
 lora_config = MultiLoraConfig(r=r, K=K)#, init_lora_weights='pissa')
@@ -67,14 +98,26 @@ peft_model.print_trainable_parameters()
 #         loraA.append(param)
 #     elif 'lora_B' in name:
 #         loraB.append(param)
+#
 
-# optimizer = AdamW(peft_model.parameters(), lr=1e-3)
+sigma = args.sigma
+kernel = RBF_kernel(sigma=sigma)
+gamma = args.gamma
 
-optimizer = SVGD(peft_model, lr=1e1, kernel= RBF_kernel(sigma=1e-2), gamma=3e1)
+if args.optimizer == "adamw":
+    optimizer = AdamW(peft_model.parameters(), lr=args.lr)
+elif args.optimizer == "sgd":
+    optimizer = SGD(peft_model.parameters(), lr=args.lr)
+elif args.optimizer == "sadamw":
+    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma)
+elif args.optimizer == "svgd":
+    optimizer = SVGD(peft_model, lr=1e-3, kernel=kernel, gamma=gamma)
+else:
+    raise ValueError(f"Unknown optimizer: {args.optimizer}")
 
 peft_model.to(device)
 
-num_epochs = 5
+num_epochs = args.num_epochs
 num_training_steps = num_epochs * len(train_dataloader)
 lr_scheduler = get_scheduler(
     "linear",
@@ -84,18 +127,28 @@ lr_scheduler = get_scheduler(
 )
 
 
-peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
+# peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
 
 # breakpoint() 
 
 # metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
 # metrics_avg = evaluate.load("glue", "mrpc")
 
-
+stats = {
+    "loss": [],
+    "epoch_times": [],
+    "val_loss": [],
+    "val_acc": [],
+    "val_acc_per_particle": [],
+    "val_disagreements": []
+}
 
 def run_eval(model, eval_dataloader, metrics=None):
-    acc_per_particle = t.zeros(K)
-    ensemble_acc = t.zeros(1)
+    acc_per_particle = t.zeros(K).to(device)
+    ensemble_acc = t.zeros(1).to(device)
+
+    disagreements = t.zeros(K).to(device)
+    loss = t.zeros(1).to(device)
 
     model.eval()
     for batch in eval_dataloader:
@@ -103,6 +156,8 @@ def run_eval(model, eval_dataloader, metrics=None):
 
         with t.no_grad():
             outputs = model(**batch)
+
+        loss += outputs.loss.item()
 
         logits = outputs.logits
         logits = logits.reshape(K, -1, *logits.shape[1:])
@@ -112,8 +167,12 @@ def run_eval(model, eval_dataloader, metrics=None):
         predictions = t.argmax(logits, dim=-1)
         predictions_avg = t.argmax(logits_avg, dim=-1)
 
+        disagreements += t.sum(predictions != predictions_avg, dim=-1)
+
         ensemble_acc += t.sum(predictions_avg == batch["labels"].reshape(K, -1)[0])
         acc_per_particle += t.sum(predictions == batch["labels"].reshape(K, -1), dim=-1)
+
+
 
         # breakpoint()
 
@@ -126,20 +185,26 @@ def run_eval(model, eval_dataloader, metrics=None):
     # for i, m in enumerate(metrics):
     #     print(f"LORA_{i}: {m.compute()}")
 
+    loss /= len(eval_dataloader.dataset) * 1.0
     acc_per_particle /= len(eval_dataloader.dataset) * 1.0
     ensemble_acc /= len(eval_dataloader.dataset) * 1.0
 
+    print(f"Validation Loss: {loss}")
     print(f"Acc per particle: {acc_per_particle}")
     print(f"Ensemble acc: {ensemble_acc}")
+    print(f"Disagreements per particle: {disagreements} (total examples: {len(eval_dataloader.dataset)})")
 
+    return loss, acc_per_particle.cpu(), ensemble_acc.cpu(), disagreements.cpu()
 
 
 run_eval(peft_model, eval_dataloader)#, metrics)
 
 for epoch in range(num_epochs):
-    model.train()
+    epoch_start_time = time.time()
+    peft_model.train()
     print(f"Epoch {epoch}")
-    progress_bar = tqdm(range(len(train_dataloader)))
+    if args.progress_bar:
+        progress_bar = tqdm(range(len(train_dataloader)))
 
     for batch in train_dataloader:
         batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
@@ -149,13 +214,45 @@ for epoch in range(num_epochs):
         loss = outputs.loss
         loss.backward()
 
+        # breakpoint()
+
         optimizer.step()
         optimizer.zero_grad()
         
         lr_scheduler.step()
-        progress_bar.update(1)
+        if args.progress_bar:
+            progress_bar.update(1)
 
-    progress_bar.refresh()
-    progress_bar.close()
+    if args.progress_bar:
+        progress_bar.refresh()
+        progress_bar.close()
 
-    run_eval(peft_model, eval_dataloader)#, metrics)
+    epoch_time = time.time() - epoch_start_time
+    print(f"Epoch time: {epoch_time}")
+
+    val_start_time = time.time()
+    val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
+    print(f"Validation time: {time.time() - val_start_time}")
+
+    stats["loss"].append(loss.item())
+    stats["epoch_times"].append(epoch_time)
+    stats["val_loss"].append(val_loss)
+    stats["val_acc"].append(ensemble_acc)
+    stats["val_acc_per_particle"].append(acc_per_particle)
+    stats["val_disagreements"].append(disagreements)
+
+    # breakpoint()
+
+    print()
+
+print(f"Total time: {time.time() - start_time}")
+
+if args.save_results:
+    with open(f"results/{args.optimizer}_r{r}_K{K}_gamma{gamma}_sigma{sigma}.pkl", "wb") as f:
+        pickle.dump(stats, f)
+
+if device.type == 'cuda': 
+    cuda_mem_summary = f"CUDA memory - Card size: {t.cuda.get_device_properties(device).total_memory/(1024**3):.2f}GB, Max allocated: {t.cuda.max_memory_allocated(device)/(1024**3):.2f}GB, Max reserved: {t.cuda.max_memory_reserved(device)/(1024**3):.2f}GB"
+    print(cuda_mem_summary)
+
+print(f"Finished at: {time.asctime()}")
