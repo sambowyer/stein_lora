@@ -1,0 +1,224 @@
+import torch
+from torch import Tensor
+from .svgd import svgd_step
+from .multi_lora import MultiLoraLayer
+from torch.optim.optimizer import _get_scalar_dtype
+
+# def _get_scalar_dtype(is_fused=None):
+#     if is_fused:
+#         return torch.float32
+#     return (
+#         torch.float64 if torch.get_default_dtype() == torch.float64 else torch.float32
+#     )
+
+
+
+class SAdamW(torch.optim.AdamW):
+    '''This class implements AdamW but using SVGD updates in place of gradients'''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False, sigma=1e-3, gamma=0.1):
+        super(SAdamW, self).__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        self.sigma = sigma
+        self.gamma = gamma
+
+    def _init_group(
+        self,
+        group,
+        params_with_grad,
+        grads,  # N.B. we're going to replace these grads with the SVGD updates
+        amsgrad,
+        exp_avgs,
+        exp_avg_sqs,
+        max_exp_avg_sqs,
+        state_steps,
+    ):
+        has_complex = False
+
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            has_complex |= torch.is_complex(p)
+            params_with_grad.append(p)
+            if p.grad.is_sparse:
+                raise RuntimeError("AdamW does not support sparse gradients")
+            
+            ##################### SVGD update #####################
+            # grads.append(p.grad)
+            # breakpoint()
+
+            ######## (rest of code left the same as AdamW) ########
+            
+
+            state = self.state[p]
+
+            # State initialization
+            if len(state) == 0:
+                # note(crcrpar): Deliberately host `step` on CPU if both capturable and fused are off.
+                # This is because kernel launches are costly on CUDA and XLA.
+                state["step"] = (
+                    torch.zeros(
+                        (),
+                        dtype=_get_scalar_dtype(is_fused=group["fused"]),
+                        device=p.device,
+                    )
+                    if group["capturable"] or group["fused"]
+                    else torch.tensor(0.0, dtype=_get_scalar_dtype())
+                )
+                # Exponential moving average of gradient values
+                state["exp_avg"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+                # Exponential moving average of squared gradient values
+                state["exp_avg_sq"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+                if amsgrad:
+                    # Maintains max of all exp. moving avg. of sq. grad. values
+                    state["max_exp_avg_sq"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+
+            exp_avgs.append(state["exp_avg"])
+            exp_avg_sqs.append(state["exp_avg_sq"])
+
+            if group["amsgrad"]:
+                max_exp_avg_sqs.append(state["max_exp_avg_sq"])
+            if group["differentiable"] and state["step"].requires_grad:
+                raise RuntimeError(
+                    "`requires_grad` is not supported for `step` in differentiable mode"
+                )
+
+            # Foreach without capturable does not support a tensor lr
+            if (
+                group["foreach"]
+                and isinstance(group["lr"], Tensor)
+                and not group["capturable"]
+            ):
+                raise RuntimeError(
+                    "lr as a Tensor is not supported for capturable=False and foreach=True"
+                )
+
+            state_steps.append(state["step"])
+
+        ######################## NEW CODE ###########################
+        assert len(params_with_grad) % 2 == 0
+        for i in range(len(params_with_grad) // 2):
+            A = params_with_grad[2*i]
+            B = params_with_grad[2*i+1]
+
+            assert A.shape[:-2] == B.shape[:-2]
+            assert A.shape[-2:] == B.shape[-2:][::-1]
+
+            update_A, update_B = svgd_step(A, B, self.sigma, self.gamma)
+
+            assert update_A.shape == A.shape
+            assert update_B.shape == B.shape 
+
+            grads.extend([update_A, update_B])
+
+        #############################################################
+
+
+        return has_complex
+    
+# TODO: rewrite this to use tensors as arguments and not full adapter modules
+def svgd_step(A : Tensor, B : Tensor, sigma, gamma):
+    '''
+    A: torch.Tensor of shape (K, r, d_in)
+    B: torch.Tensor of shape (K, d_out, r)
+    sigma: float
+    gamma: float
+
+    Returns:
+    update_A: torch.Tensor of shape (K, r, d_in)
+    update_B: torch.Tensor of shape (K, d_out, r)
+    '''
+
+    lora_A = A
+    lora_B = B
+
+    K = lora_A.shape[0]
+    assert K == lora_B.shape[0]
+
+    # get log likelihood (loss) gradients
+    log_lik_grad_A = lora_A.grad.clone()
+    log_lik_grad_B = lora_B.grad.clone()
+
+    # reset grads
+    lora_A.grad.zero_()
+    lora_B.grad.zero_()
+
+    # # get log prior gradients
+    # lora_A_log_prior_grad = 2*(lora_A.weight**2).sum((-1,-2)).sqrt().log()
+    # lora_B_log_prior_grad = 2*(lora_B.weight**2).sum((-1,-2)).sqrt().log()
+
+    # (improper) uniform prior
+    lora_A_log_prior_grad = torch.zeros((K,))
+    lora_B_log_prior_grad = torch.zeros((K,))
+
+    # # reset grads
+    # lora_A.weight.grad.zero_()
+    # lora_B.weight.grad.zero_()
+
+
+    # construct weight-update tensor
+    update_A = torch.zeros_like(lora_A)
+    update_B = torch.zeros_like(lora_B)
+
+    kernel_matrix = torch.zeros((K,K))
+ 
+    # get evaluations and gradients of kernel
+    for i in range(K):
+        for j in range(K):
+            kernel_val = rbf_kernel(A, B, i, j, sigma)
+            # kernel_val.backward()
+
+            kernel_matrix[i,j] = kernel_val
+            # print(f"{e} kernel_val: {kernel_val}, MSD: {MSD(adapter, i, j, -1)}")
+
+            # if e > 1: breakpoint()
+            # breakpoint()
+        
+            update_A[i].add_(kernel_val * (log_lik_grad_A[j] + lora_A_log_prior_grad[j]) - (gamma/K)*lora_A.grad[j])
+            update_B[i].add_(kernel_val * (log_lik_grad_B[j] + lora_B_log_prior_grad[j]) - (gamma/K)*lora_B.grad[j])
+
+            # reset grads
+            lora_A.grad.zero_()
+            lora_B.grad.zero_()
+
+    # if e > 1: breakpoint()
+
+    # if (lora_A.weight.data == 0).all():
+    #     print("lora_A   all zero!")
+    # if (lora_B.weight.data == 0).all():
+    #     print("lora_B all zero!")
+    # if (update_A.data == 0).all():
+    #     print("update_A all zero!")
+    # if (update_B.data == 0).all():
+    #     print("update_B all zero!")
+
+    # breakpoint()
+    # apply update
+    # with torch.no_grad():
+    #     lora_A.add_(update_A)
+    #     lora_B.add_(update_B)
+    return update_A, update_B
+
+def MSD(A, B, i,j):
+    lora_A = A
+    lora_B = B
+
+    d_in = lora_A.shape[0]
+    d_out = lora_B.shape[1]
+
+    def trace_computation(i_, j_):
+        AAt = torch.matmul(lora_A[i_]  , lora_A[j_].T)
+        BBt = torch.matmul(lora_B[i_].T, lora_B[j_])
+        # breakpoint()
+
+        return torch.dot(AAt.flatten(), BBt.flatten())
+    
+    return (trace_computation(i, i) + trace_computation(j, j) - trace_computation(i, j) - trace_computation(j,i)) / (d_in * d_out)
+
+
+def rbf_kernel(A, B, i, j, sigma):
+    return torch.exp(-MSD(A, B, i, j) / (2*sigma**2))
