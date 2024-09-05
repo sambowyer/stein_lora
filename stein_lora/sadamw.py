@@ -120,7 +120,6 @@ class SAdamW(torch.optim.AdamW):
 
         return has_complex
     
-# TODO: rewrite this to use tensors as arguments and not full adapter modules
 def svgd_step(A : Tensor, B : Tensor, sigma, gamma):
     '''
     A: torch.Tensor of shape (K, r, d_in)
@@ -133,36 +132,24 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma):
     update_B: torch.Tensor of shape (K, d_out, r)
     '''
 
-    lora_A = A
-    lora_B = B
-
-    K = lora_A.shape[0]
-    assert K == lora_B.shape[0]
+    K = A.shape[0]
+    assert K == B.shape[0]
 
     # get log likelihood (loss) gradients
-    log_lik_grad_A = lora_A.grad.clone()
-    log_lik_grad_B = lora_B.grad.clone()
+    log_lik_grad_A = A.grad.clone()
+    log_lik_grad_B = B.grad.clone()
 
     # reset grads
-    lora_A.grad.zero_()
-    lora_B.grad.zero_()
-
-    # # get log prior gradients
-    # lora_A_log_prior_grad = 2*(lora_A.weight**2).sum((-1,-2)).sqrt().log()
-    # lora_B_log_prior_grad = 2*(lora_B.weight**2).sum((-1,-2)).sqrt().log()
+    A.grad.zero_()
+    B.grad.zero_()
 
     # (improper) uniform prior
-    lora_A_log_prior_grad = torch.zeros((K,))
-    lora_B_log_prior_grad = torch.zeros((K,))
-
-    # # reset grads
-    # lora_A.weight.grad.zero_()
-    # lora_B.weight.grad.zero_()
-
+    A_log_prior_grad = torch.zeros((K,))
+    B_log_prior_grad = torch.zeros((K,))
 
     # construct weight-update tensor
-    update_A = torch.zeros_like(lora_A)
-    update_B = torch.zeros_like(lora_B)
+    update_A = torch.zeros_like(A)
+    update_B = torch.zeros_like(B)
 
     kernel_matrix = torch.zeros((K,K))
  
@@ -178,46 +165,26 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma):
             # if e > 1: breakpoint()
             # breakpoint()
         
-            update_A[i].add_(kernel_val * (log_lik_grad_A[j] + lora_A_log_prior_grad[j]) - (gamma/K)*lora_A.grad[j])
-            update_B[i].add_(kernel_val * (log_lik_grad_B[j] + lora_B_log_prior_grad[j]) - (gamma/K)*lora_B.grad[j])
+            update_A[i].add_(kernel_val * (log_lik_grad_A[j] + A_log_prior_grad[j]) - (gamma/K)*A.grad[j])
+            update_B[i].add_(kernel_val * (log_lik_grad_B[j] + B_log_prior_grad[j]) - (gamma/K)*B.grad[j])
 
             # reset grads
-            lora_A.grad.zero_()
-            lora_B.grad.zero_()
+            A.grad.zero_()
+            B.grad.zero_()
 
-    # if e > 1: breakpoint()
-
-    # if (lora_A.weight.data == 0).all():
-    #     print("lora_A   all zero!")
-    # if (lora_B.weight.data == 0).all():
-    #     print("lora_B all zero!")
-    # if (update_A.data == 0).all():
-    #     print("update_A all zero!")
-    # if (update_B.data == 0).all():
-    #     print("update_B all zero!")
-
-    # breakpoint()
-    # apply update
-    # with torch.no_grad():
-    #     lora_A.add_(update_A)
-    #     lora_B.add_(update_B)
     return update_A, update_B
 
 def MSD(A, B, i,j):
-    lora_A = A
-    lora_B = B
-
-    d_in = lora_A.shape[0]
-    d_out = lora_B.shape[1]
-
+    d_in = A.shape[0]
+    d_out = B.shape[1]
+    
     def trace_computation(i_, j_):
-        AAt = torch.matmul(lora_A[i_]  , lora_A[j_].T)
-        BBt = torch.matmul(lora_B[i_].T, lora_B[j_])
-        # breakpoint()
+        AAt = torch.matmul(A[i_]  , A[j_].T)
+        BBt = torch.matmul(B[i_].T, B[j_])
 
         return torch.dot(AAt.flatten(), BBt.flatten())
     
-    return (trace_computation(i, i) + trace_computation(j, j) - trace_computation(i, j) - trace_computation(j,i)) / (d_in * d_out)
+    return (trace_computation(i, i) + trace_computation(j, j) - 2*trace_computation(i, j)) / (d_in * d_out)
 
 
 def rbf_kernel(A, B, i, j, sigma):
