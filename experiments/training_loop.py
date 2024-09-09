@@ -11,11 +11,14 @@ from accelerate import Accelerator
 import argparse
 import time
 import pickle
+import cProfile
 
 from stein_lora import MultiLoraConfig, MultiLoraModel, RBF_kernel, SVGD, SAdamW
 
 print(f"Start at: {time.asctime()}\n")
 start_time = time.time()
+
+AUTO_BOOL = lambda x: x.lower() in ['true', '1', 't', 'y', 'yes']
 
 argparser = argparse.ArgumentParser()
 argparser.add_argument("--model", type=str, default="bert-base-uncased")
@@ -24,17 +27,22 @@ argparser.add_argument("--dataset_name", type=str, default="mrpc")
 argparser.add_argument("--truncate_train", type=int, default=-1)
 argparser.add_argument("--truncate_val", type=int, default=-1)
 argparser.add_argument("--optimizer", type=str, default="adamw")
+argparser.add_argument("--low_mem_opt", type=AUTO_BOOL, default=False)
 argparser.add_argument("--lr", type=float, default=1e-3)
+argparser.add_argument("--lr_decay", type=AUTO_BOOL, default=True)
 argparser.add_argument("--num_epochs", type=int, default=10)
 argparser.add_argument("--batch_size", type=int, default=4)
 argparser.add_argument("--r", type=int, default=4)
 argparser.add_argument("--K", type=int, default=10)
-argparser.add_argument("--gamma", type=float, default=1e-1)
-argparser.add_argument("--sigma", type=float, default=1e-18)
-argparser.add_argument("--progress_bar", type=bool, default=False)
-argparser.add_argument("--save_results", type=bool, default=True)
+argparser.add_argument("--gamma", type=float, default=1e-2)
+argparser.add_argument("--sigma", type=str, default="auto")
+argparser.add_argument("--progress_bar", type=AUTO_BOOL, default=False)
+argparser.add_argument("--save_results", type=AUTO_BOOL, default=True)
 argparser.add_argument("--seed", type=int, default=42)
 args = argparser.parse_args()
+
+if args.sigma != "auto":
+    args.sigma = float(args.sigma)
 
 print(args)
 
@@ -109,7 +117,7 @@ if args.optimizer == "adamw":
 elif args.optimizer == "sgd":
     optimizer = SGD(peft_model.parameters(), lr=args.lr)
 elif args.optimizer == "sadamw":
-    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma)
+    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma, low_mem=args.low_mem_opt)
 elif args.optimizer == "svgd":
     optimizer = SVGD(peft_model, lr=1e-3, kernel=kernel, gamma=gamma)
 else:
@@ -119,12 +127,14 @@ peft_model.to(device)
 
 num_epochs = args.num_epochs
 num_training_steps = num_epochs * len(train_dataloader)
-lr_scheduler = get_scheduler(
-    "linear",
-    optimizer=optimizer,
-    num_warmup_steps=0,
-    num_training_steps=num_training_steps,
-)
+
+if args.lr_decay:
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=num_training_steps,
+    )
 
 
 # peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
@@ -150,6 +160,9 @@ def run_eval(model, eval_dataloader, metrics=None):
     disagreements = t.zeros(K).to(device)
     loss = t.zeros(1).to(device)
 
+    kl_v_ens = t.zeros(K).to(device)
+    kl_particles = t.zeros((K,K)).to(device)
+
     model.eval()
     for batch in eval_dataloader:
         batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
@@ -166,6 +179,9 @@ def run_eval(model, eval_dataloader, metrics=None):
 
         predictions = t.argmax(logits, dim=-1)
         predictions_avg = t.argmax(logits_avg, dim=-1)
+
+        kl_v_ens     += (logits.softmax(-1) * (logits.log_softmax(-1) - logits_avg.log_softmax(-1)         )).sum((-1,-2))
+        kl_particles += (logits.softmax(-1) * (logits.log_softmax(-1) - logits.unsqueeze(1).log_softmax(-1))).sum((-1,-2))
 
         disagreements += t.sum(predictions != predictions_avg, dim=-1)
 
@@ -188,62 +204,71 @@ def run_eval(model, eval_dataloader, metrics=None):
     loss /= len(eval_dataloader.dataset) * 1.0
     acc_per_particle /= len(eval_dataloader.dataset) * 1.0
     ensemble_acc /= len(eval_dataloader.dataset) * 1.0
+    kl_v_ens /= len(eval_dataloader.dataset) * 1.0
+    kl_particles /= len(eval_dataloader.dataset) * 1.0
 
+    print(f"Disagreements per particle: {disagreements} (total examples: {len(eval_dataloader.dataset)})")
+    print(f"KL(particle || ensemble): {kl_v_ens}") 
+    print(f"KL(particle || particle): {kl_particles}")
     print(f"Validation Loss: {loss}")
     print(f"Acc per particle: {acc_per_particle}")
     print(f"Ensemble acc: {ensemble_acc}")
-    print(f"Disagreements per particle: {disagreements} (total examples: {len(eval_dataloader.dataset)})")
 
     return loss, acc_per_particle.cpu(), ensemble_acc.cpu(), disagreements.cpu()
 
 
 run_eval(peft_model, eval_dataloader)#, metrics)
 
-for epoch in range(num_epochs):
-    epoch_start_time = time.time()
-    peft_model.train()
-    print(f"Epoch {epoch}")
-    if args.progress_bar:
-        progress_bar = tqdm(range(len(train_dataloader)))
-
-    for batch in train_dataloader:
-        batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
-
-        # breakpoint()
-        outputs = peft_model(**batch)
-        loss = outputs.loss
-        loss.backward()
-
-        # breakpoint()
-
-        optimizer.step()
-        optimizer.zero_grad()
-        
-        lr_scheduler.step()
+def train():
+    for epoch in range(num_epochs):
+        epoch_start_time = time.time()
+        peft_model.train()
+        print(f"Epoch {epoch}")
         if args.progress_bar:
-            progress_bar.update(1)
+            progress_bar = tqdm(range(len(train_dataloader)))
 
-    if args.progress_bar:
-        progress_bar.refresh()
-        progress_bar.close()
+        for batch in train_dataloader:
+            batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
 
-    epoch_time = time.time() - epoch_start_time
-    print(f"Epoch time: {epoch_time}")
+            # breakpoint()
+            outputs = peft_model(**batch)
+            loss = outputs.loss
+            loss.backward()
 
-    val_start_time = time.time()
-    val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
-    print(f"Validation time: {time.time() - val_start_time}")
+            # breakpoint()
 
-    stats["loss"].append(loss.item())
-    stats["epoch_times"].append(epoch_time)
-    stats["val_loss"].append(val_loss)
-    stats["val_acc"].append(ensemble_acc)
-    stats["val_acc_per_particle"].append(acc_per_particle)
-    stats["val_disagreements"].append(disagreements)
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            if args.lr_decay:
+                lr_scheduler.step()
+            if args.progress_bar:
+                progress_bar.update(1)
 
-    # breakpoint()
+        if args.progress_bar:
+            progress_bar.refresh()
+            progress_bar.close()
 
-    print()
+        epoch_time = time.time() - epoch_start_time
+        print(f"Epoch time: {epoch_time}")
+
+        val_start_time = time.time()
+        val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
+        print(f"Validation time: {time.time() - val_start_time}")
+
+        stats["loss"].append(loss.item())
+        stats["epoch_times"].append(epoch_time)
+        stats["val_loss"].append(val_loss)
+        stats["val_acc"].append(ensemble_acc)
+        stats["val_acc_per_particle"].append(acc_per_particle)
+        stats["val_disagreements"].append(disagreements)
+
+        # breakpoint()
+
+        print()
+
+# cProfile.run("train()", "profiles/train_stats.prof")
+train()
 
 print(f"Total time: {time.time() - start_time}")
 
