@@ -2,7 +2,7 @@
 ### Training Low-Rank Adaptors (LoRA) for LLMs using Stein variational gradient descent (SVGD).
 
 ## Plan
-- Use [Stein VI](https://arxiv.org/pdf/1608.04471) to train [LoRA](https://arxiv.org/pdf/2106.09685) with the hopes that this improves finetuning performance.
+- Use [Stein VI](https://arxiv.org/pdf/1608.04471) to train [LoRA](https://arxiv.org/pdf/2106.09685) with the hopes that this improves finetuning performance both on Q&A datasets and for RLHF.
 
 
 ## Related work
@@ -12,19 +12,16 @@
     - Explores how to apply SVGD succesfully on neural networks, suggesting a variety of potentially useful kernels.
 
 ## Questions
-- How will Stein be affected by the fact that LoRA weights are invariant to permutations (in the typical NN neuron-permutation sense)
-    - SVD seems reasonable at first, but might lead to permutation invariance if two or more singular values are very similar (they might then be able to 'swap' without much effect on output)
-    - maybe similarity/kernel of big matrix will be easier to work with (and invariant to permuations of LoRA small matrices)
-    - OR do kernel on the full lora updates $\Delta W = A B$, as these will be permutation-free AND we can probably compute such a kernel without having to ever fully realise the big update matrix.
+- 
 
 ## TODO
-- Get paralell LoRA adapters working
-    - Check param initialisation is sensible
 - Get baselines working and reproduce previous LoRA results
 - Dig out papers that make stein more reasonable:
-    - kernels not necessarily in weight-space, instead on NN outputs or gradients etc.
-- Get experiment script set up for easy plug-and-play changes to Stein
-- Implement Stein VI
-    
+    - With an added SGLD noise term in each update ([paper](https://arxiv.org/pdf/2106.10760)) $$ \sum_{j=1}^n \sqrt{\frac{2 \mathcal{K}_{ij}}{\epsilon_t}} \eta_j$$ where
+        - $\mathcal{K}_{ij} = \frac{1}{n}k(W_i, Wj)\mathbb{I}_{d \times d}$
+        - $\eta_j \sim \mathcal{N}(0, \mathbb{I}_{d \times d})$
+        - $\epsilon_t$ is step size/learning rate
+- use autodiff and check updates match with hand-computed gradients
+    - compare speed
 
 
