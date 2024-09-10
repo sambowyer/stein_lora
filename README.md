@@ -18,7 +18,7 @@
 - Get baselines working and reproduce previous LoRA results
 - Dig out papers that make stein more reasonable:
     - With an added SGLD noise term in each update ([paper](https://arxiv.org/pdf/2106.10760)) $\sum_{j=1}^n \sqrt{\frac{2 \mathcal{K}_{ij}}{\epsilon_t}} \eta_j$ where
-        - $ \mathcal{K}_{ij} = \frac{1}{n} k(W_i, W_j) \mathbb{I}_{d \times d}$
+        - $\mathcal{K}_{ij} = \frac{1}{n} k(W_i, W_j) \mathbb{I}_{d \times d}$
         - $\eta_j \sim \mathcal{N}(0, \mathbb{I}_{d \times d})$
         - $\epsilon_t$ is step size/learning rate
 - use autodiff and check updates match with hand-computed gradients
