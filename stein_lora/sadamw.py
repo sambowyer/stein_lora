@@ -128,7 +128,8 @@ class SAdamW(torch.optim.AdamW):
 
 
         return has_complex
-    
+
+@torch.enable_grad()
 def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     '''
     A: torch.Tensor of shape (K, r, d_in)
@@ -158,16 +159,13 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     log_lik_grad_B = B.grad.clone()
 
     # reset grads
-    # A.grad.zero_()
-    # B.grad.zero_()
+    A.grad.zero_()
+    B.grad.zero_()
 
     # with torch.no_grad():
     # (improper) uniform prior
     A_log_prior_grad_ = 0 #torch.zeros((K,), device=device)
     B_log_prior_grad_ = 0 #torch.zeros((K,), device=device)
-
-    A_log_prior_grad = torch.zeros((K,), device=device)
-    B_log_prior_grad = torch.zeros((K,), device=device)
 
     # precompute AAt and BtB as (K, K, r, r) tensors
     AAt = torch.matmul(A.unsqueeze(1), A.unsqueeze(0).transpose(2, 3))
@@ -188,55 +186,38 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
         if sigma == 0:
             sigma = 1e-18
 
-    # sigma = 2*sigma**2
-
-    kernel_matrix = torch.exp(-MSDs / (2*sigma**2))
-    # kernel_matrix = torch.exp(-MSDs / sigma)
-
-    # slow version    
-    # construct weight-update tensor
-    # update_A = torch.zeros_like(A)
-    # update_B = torch.zeros_like(B)
-
-    # # get evaluations and gradients of kernel
-    # for i in range(K):
-    #     for j in range(K):
-    #         # kernel_val = torch.exp(-MSDs[i,j] / (2*sigma**2))
-    #         kernel_val = torch.exp(-MSDs[i,j] / sigma)
-
-    #         # driving force (likelihood) term
-    #         update_A[i].add_(kernel_val * (log_lik_grad_A[j] + A_log_prior_grad[j]))
-    #         update_B[i].add_(kernel_val * (log_lik_grad_B[j] + B_log_prior_grad[j]))
-
-    #         # repulsive force term
-    #         if i != j: # the gradient of the kernel is 0 at the diagonal
-    #             # coeff = (-gamma/K)*(-kernel_val / sigma**2)
-    #             coeff = (-gamma * (-2) * kernel_val / sigma)
-
-    #             update_A[i].add_(coeff * ((BtB[i,i] @ A[i])     - (BtB[i,j] @ A[j])))
-    #             update_B[i].add_(coeff * ((B[i]     @ AAt[i,i]) - (B[j]     @ AAt[j,i])))
-    
+    # kernel_matrix = torch.exp(-MSDs / (2*sigma**2))
+    kernel_matrix = torch.exp(-MSDs / sigma)
+    # breakpoint()
+    # kernel_matrix.sum().backward()
+    Ag, Bg = torch.autograd.grad(kernel_matrix.sum(), (A, B))
+    autograd_rep_A = Ag * gamma / K
+    autograd_rep_B = Bg * gamma / K
 
     # construct the updates
     # first the driving force term
-    update_A = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_A + A_log_prior_grad_)
-    update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_B + B_log_prior_grad_)
+    update_A = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_A + A_log_prior_grad_) / K
+    update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_B + B_log_prior_grad_) / K
 
-    update_A /= K
-    update_B /= K
+    # then the repulsive force term 
+    rep_A = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((BtB.diagonal().permute(2,0,1) @ A) - (BtB @ A.unsqueeze(0)).transpose(0,1))).sum(0) / K
+    rep_B = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((B @ AAt.diagonal().permute(2,0,1)) - (B.unsqueeze(1) @ AAt))).sum(0) / K
 
-    # then the repulsive force term (maybe multiply coeff by 2?)
-    update_A += ((gamma * kernel_matrix/(sigma**2))[...,None,None] * ((BtB.diagonal().permute(2,0,1) @ A) - (BtB @ A.unsqueeze(0)).transpose(0,1))).sum(0) / K
-    update_B += ((gamma * kernel_matrix/(sigma**2))[...,None,None] * ((B @ AAt.diagonal().permute(2,0,1)) - (B.unsqueeze(1) @ AAt))).sum(0) / K
+    # TODO: Figure out why (as it currently stands)
+    #   auto_grad_rep_X = 2* rep_X / (768**2)
+    
+    # breakpoint()
+    # update_A += rep_A
+    # update_B += rep_B
 
-    # update_A /= K
-    # update_B /= K
+    update_A += autograd_rep_A
+    update_B += autograd_rep_B
 
     # print(f"ΔA ~ {update_A.abs().mean():.3g}, ΔB ~ {update_B.abs().mean():.3g}, sigma ~ {sigma:.3g}")
     # print(f" A ~ {A.abs().mean():.3g},  B ~ {B.abs().mean():.3g}")
 
-    # if e % 10 == 0 and e>1:
-    #     breakpoint()
+    if e % 10 == 0 and e>1:
+        breakpoint()
 
     return update_A, update_B, sigma
     
