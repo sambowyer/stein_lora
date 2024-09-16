@@ -4,23 +4,14 @@ from torch import Tensor
 from .multi_lora import MultiLoraLayer
 from torch.optim.optimizer import _get_scalar_dtype
 
-# def _get_scalar_dtype(is_fused=None):
-#     if is_fused:
-#         return torch.float32
-#     return (
-#         torch.float64 if torch.get_default_dtype() == torch.float64 else torch.float32
-#     )
-
-
 
 class SAdamW(torch.optim.AdamW):
     '''This class implements AdamW but using SVGD updates in place of gradients'''
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False, sigma=1e-3, gamma=0.1, low_mem=False):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False, sigma=1e-3, gamma=0.1):
         super(SAdamW, self).__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
         self.sigma = sigma
         self.gamma = gamma
 
-        self.low_mem = low_mem
 
     def _init_group(
         self,
@@ -110,12 +101,7 @@ class SAdamW(torch.optim.AdamW):
             assert A.shape[:-2] == B.shape[:-2]
             assert A.shape[-2:] == B.shape[-2:][::-1]
 
-            if self.low_mem:
-                update_A, update_B = svgd_step_low_mem(A, B, self.sigma, self.gamma)
-            else:
-                update_A, update_B, sigma = svgd_step(A, B, self.sigma, self.gamma, e=state["step"])
-
-                # up_A, up_B = svgd_step_low_mem(A, B, sigma, self.gamma)
+            update_A, update_B, sigma = svgd_step(A, B, self.sigma, self.gamma, e=state["step"])
 
             assert update_A.shape == A.shape
             assert update_B.shape == B.shape 
@@ -162,7 +148,6 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     A.grad.zero_()
     B.grad.zero_()
 
-    # with torch.no_grad():
     # (improper) uniform prior
     A_log_prior_grad_ = 0 #torch.zeros((K,), device=device)
     B_log_prior_grad_ = 0 #torch.zeros((K,), device=device)
@@ -181,18 +166,14 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     MSDs = (traces_diag[:, None] + traces_diag[None, :] - 2 * traces) / (d_in * d_out)
 
     if sigma == 'auto':
-        sigma = (MSDs[*torch.triu_indices(K,K,1)].median() / (2*torch.log(torch.tensor(K, device=device))).sqrt()).item()
+        # use .quantile(0.5) instead of .median to get mean of two middle values (pytorch.median takes lower of the two)
+        sigma = (MSDs[*torch.triu_indices(K,K,1)].quantile(0.5) / (2*torch.log(torch.tensor(K, device=device))).sqrt()).item()
 
         if sigma == 0:
             sigma = 1e-18
 
     # kernel_matrix = torch.exp(-MSDs / (2*sigma**2))
     kernel_matrix = torch.exp(-MSDs / sigma)
-    # breakpoint()
-    # kernel_matrix.sum().backward()
-    Ag, Bg = torch.autograd.grad(kernel_matrix.sum(), (A, B))
-    autograd_rep_A = Ag * gamma / K
-    autograd_rep_B = Bg * gamma / K
 
     # construct the updates
     # first the driving force term
@@ -200,93 +181,18 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_B + B_log_prior_grad_) / K
 
     # then the repulsive force term 
-    rep_A = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((BtB.diagonal().permute(2,0,1) @ A) - (BtB @ A.unsqueeze(0)).transpose(0,1))).sum(0) / K
-    rep_B = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((B @ AAt.diagonal().permute(2,0,1)) - (B.unsqueeze(1) @ AAt))).sum(0) / K
+    kernel_grad_A, kernel_grad_B = torch.autograd.grad(kernel_matrix.sum(), (A, B))
 
-    # TODO: Figure out why (as it currently stands)
-    #   auto_grad_rep_X = 2* rep_X / (768**2)
-    
-    # breakpoint()
-    # update_A += rep_A
-    # update_B += rep_B
+    rep_A = kernel_grad_A * gamma / K
+    rep_B = kernel_grad_B * gamma / K
 
-    update_A += autograd_rep_A
-    update_B += autograd_rep_B
+    update_A += rep_A
+    update_B += rep_B
 
     # print(f"ΔA ~ {update_A.abs().mean():.3g}, ΔB ~ {update_B.abs().mean():.3g}, sigma ~ {sigma:.3g}")
     # print(f" A ~ {A.abs().mean():.3g},  B ~ {B.abs().mean():.3g}")
 
-    if e % 10 == 0 and e>1:
-        breakpoint()
+    # if e % 10 == 0 and e>1:
+    #     breakpoint()
 
     return update_A, update_B, sigma
-    
-def svgd_step_low_mem(A : Tensor, B : Tensor, sigma, gamma):
-    '''
-    A: torch.Tensor of shape (K, r, d_in)
-    B: torch.Tensor of shape (K, d_out, r)
-    sigma: float
-    gamma: float
-
-    Returns:
-    update_A: torch.Tensor of shape (K, r, d_in)
-    update_B: torch.Tensor of shape (K, d_out, r)
-    '''
-
-    K = A.shape[0]
-    assert K == B.shape[0]
-
-    # get log likelihood (loss) gradients
-    log_lik_grad_A = A.grad.clone()
-    log_lik_grad_B = B.grad.clone()
-
-    # reset grads
-    A.grad.zero_()
-    B.grad.zero_()
-
-    # (improper) uniform prior
-    A_log_prior_grad = torch.zeros((K,))
-    B_log_prior_grad = torch.zeros((K,))
-
-    # construct weight-update tensor
-    update_A = torch.zeros_like(A)
-    update_B = torch.zeros_like(B)
-
-    # kernel_matrix = torch.zeros((K,K))
- 
-    # get evaluations and gradients of kernel
-    for i in range(K):
-        for j in range(K):
-            kernel_val = rbf_kernel(A, B, i, j, sigma)
-            # kernel_val.backward()
-
-            # kernel_matrix[i,j] = kernel_val
-            # print(f"{e} kernel_val: {kernel_val}, MSD: {MSD(adapter, i, j, -1)}")
-
-            # if e > 1: breakpoint()
-            breakpoint()
-        
-            update_A[i].add_(kernel_val * (log_lik_grad_A[j] + A_log_prior_grad[j]) - (gamma/K)*A.grad[j])
-            update_B[i].add_(kernel_val * (log_lik_grad_B[j] + B_log_prior_grad[j]) - (gamma/K)*B.grad[j])
-
-            # reset grads
-            A.grad.zero_()
-            B.grad.zero_()
-
-    return update_A, update_B
-
-def MSD(A, B, i,j):
-    d_in = A.shape[0]
-    d_out = B.shape[1]
-    
-    def trace_computation(i_, j_):
-        AAt = torch.matmul(A[i_]  , A[j_].T)
-        BtB = torch.matmul(B[i_].T, B[j_])
-
-        return torch.dot(AAt.flatten(), BtB.flatten())
-    
-    return (trace_computation(i, i) + trace_computation(j, j) - 2*trace_computation(i, j)) / (d_in * d_out)
-
-
-def rbf_kernel(A, B, i, j, sigma):
-    return torch.exp(-MSD(A, B, i, j) / (2*sigma**2))

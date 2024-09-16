@@ -13,7 +13,7 @@ import time
 import pickle
 import cProfile
 
-from stein_lora import MultiLoraConfig, MultiLoraModel, RBF_kernel, SVGD, SAdamW
+from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD, SAdamW
 
 print(f"Start at: {time.asctime()}\n")
 start_time = time.time()
@@ -27,7 +27,6 @@ argparser.add_argument("--dataset_name", type=str, default="mrpc")
 argparser.add_argument("--truncate_train", type=int, default=-1)
 argparser.add_argument("--truncate_val", type=int, default=-1)
 argparser.add_argument("--optimizer", type=str, default="adamw")
-argparser.add_argument("--low_mem_opt", type=AUTO_BOOL, default=False)
 argparser.add_argument("--lr", type=float, default=1e-3)
 argparser.add_argument("--lr_decay", type=AUTO_BOOL, default=True)
 argparser.add_argument("--num_epochs", type=int, default=10)
@@ -85,7 +84,7 @@ eval_dataloader = DataLoader(
     tokenized_datasets["validation"], batch_size=args.batch_size, collate_fn=data_collator
 )
 
-
+# breakpoint()
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 
 K = args.K
@@ -109,7 +108,7 @@ peft_model.print_trainable_parameters()
 #
 
 sigma = args.sigma
-kernel = RBF_kernel(sigma=sigma)
+# kernel = RBF_kernel(sigma=sigma)
 gamma = args.gamma
 
 if args.optimizer == "adamw":
@@ -117,9 +116,9 @@ if args.optimizer == "adamw":
 elif args.optimizer == "sgd":
     optimizer = SGD(peft_model.parameters(), lr=args.lr)
 elif args.optimizer == "sadamw":
-    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma, low_mem=args.low_mem_opt)
+    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma)
 elif args.optimizer == "svgd":
-    optimizer = SVGD(peft_model, lr=1e-3, kernel=kernel, gamma=gamma)
+    optimizer = SVGD(peft_model, lr=1e-3, sigma=sigma, gamma=gamma, base_optimizer=AdamW)
 else:
     raise ValueError(f"Unknown optimizer: {args.optimizer}")
 
@@ -131,7 +130,7 @@ num_training_steps = num_epochs * len(train_dataloader)
 if args.lr_decay:
     lr_scheduler = get_scheduler(
         "linear",
-        optimizer=optimizer,
+        optimizer=optimizer.base_optimizer if args.optimizer == "svgd" else optimizer,
         num_warmup_steps=0,
         num_training_steps=num_training_steps,
     )
@@ -234,8 +233,6 @@ def train():
             outputs = peft_model(**batch)
             loss = outputs.loss
             loss.backward()
-
-            # breakpoint()
 
             optimizer.step()
             optimizer.zero_grad()
