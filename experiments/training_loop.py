@@ -15,7 +15,8 @@ import cProfile
 
 from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD, SAdamW
 
-print(f"Start at: {time.asctime()}\n")
+startasctime = time.asctime()
+print(f"Start at: {startasctime}\n")
 start_time = time.time()
 
 AUTO_BOOL = lambda x: x.lower() in ['true', '1', 't', 'y', 'yes']
@@ -37,11 +38,17 @@ argparser.add_argument("--gamma", type=float, default=1e-2)
 argparser.add_argument("--sigma", type=str, default="auto")
 argparser.add_argument("--progress_bar", type=AUTO_BOOL, default=False)
 argparser.add_argument("--save_results", type=AUTO_BOOL, default=True)
+argparser.add_argument("--write_job_logs", type=AUTO_BOOL, default=False)
 argparser.add_argument("--seed", type=int, default=42)
 args = argparser.parse_args()
 
 if args.sigma != "auto":
     args.sigma = float(args.sigma)
+
+def write_log(log):
+    if args.write_job_logs:
+        with open(f"logs/{args.model}_{args.dataset_name}_{args.optimizer}_r{r}_K{K}_gamma{gamma}.log", "a") as f:
+            f.write(log)
 
 print(args)
 
@@ -52,11 +59,16 @@ t.manual_seed(args.seed)
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}\n")
 
+write_log(f"Start at: {startasctime}\n{args}\nDevice: {device}\n")
+
 # accelerator = Accelerator()
 
 raw_datasets = load_dataset(args.dataset_path, args.dataset_name)
 checkpoint = args.model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+if "Llama" in args.model:
+    tokenizer.pad_token = tokenizer.eos_token
+# tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
 # Note: we're only set up for MRPC right now
 assert args.dataset_name == "mrpc" and args.dataset_path == "glue"
@@ -86,6 +98,9 @@ eval_dataloader = DataLoader(
 
 # breakpoint()
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+if "Llama" in args.model:
+    # model.config.pad_token_id = tokenizer.eos_token_id
+    model.config.pad_token_id = model.config.eos_token_id
 
 K = args.K
 r = args.r
@@ -213,6 +228,13 @@ def run_eval(model, eval_dataloader, metrics=None):
     print(f"Acc per particle: {acc_per_particle}")
     print(f"Ensemble acc: {ensemble_acc}")
 
+    write_log(f"""Disagreements per particle: {disagreements} (total examples: {len(eval_dataloader.dataset)})
+KL(particle || ensemble): {kl_v_ens}
+KL(particle || particle): {kl_particles}
+Validation Loss: {loss}
+Acc per particle: {acc_per_particle}
+Ensemble acc: {ensemble_acc}\n""")
+        
     return loss, acc_per_particle.cpu(), ensemble_acc.cpu(), disagreements.cpu()
 
 
@@ -222,7 +244,10 @@ def train():
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
         peft_model.train()
+
         print(f"Epoch {epoch}")
+        write_log(f"Epoch {epoch}\n")
+
         if args.progress_bar:
             progress_bar = tqdm(range(len(train_dataloader)))
 
@@ -251,7 +276,9 @@ def train():
 
         val_start_time = time.time()
         val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
-        print(f"Validation time: {time.time() - val_start_time}")
+        vak_end_time = time.time()
+        print(f"Validation time: {val_end_time - val_start_time}")
+        write_log(f"Validation time: {val_end_time - val_start_time}\n")
 
         stats["loss"].append(loss.item())
         stats["epoch_times"].append(epoch_time)
@@ -268,6 +295,7 @@ def train():
 train()
 
 print(f"Total time: {time.time() - start_time}")
+write_log(f"Total time: {time.time() - start_time}\n")
 
 if args.save_results:
     with open(f"results/{args.optimizer}_r{r}_K{K}_gamma{gamma}_sigma{sigma}.pkl", "wb") as f:
@@ -276,5 +304,8 @@ if args.save_results:
 if device.type == 'cuda': 
     cuda_mem_summary = f"CUDA memory - Card size: {t.cuda.get_device_properties(device).total_memory/(1024**3):.2f}GB, Max allocated: {t.cuda.max_memory_allocated(device)/(1024**3):.2f}GB, Max reserved: {t.cuda.max_memory_reserved(device)/(1024**3):.2f}GB"
     print(cuda_mem_summary)
+    write_log(cuda_mem_summary)
 
-print(f"Finished at: {time.asctime()}")
+endtime = time.asctime()
+print(f"Finished at: {endtime}")
+write_log(f"Finished at: {endtime}\n")
