@@ -47,7 +47,7 @@ if args.sigma != "auto":
 
 def write_log(log):
     if args.write_job_logs:
-        with open(f"logs/{args.model.replace("/", "--")}_{args.dataset_name}_{args.optimizer}_r{args.r}_K{args.K}_gamma{args.gamma}.log", "a") as f:
+        with open(f"logs/{args.model.replace("/", "--")}_{args.dataset_name}_{args.optimizer}_r{args.r}_K{args.K}_gamma{args.gamma}_lr{args.lr}.log", "a") as f:
             f.write(log)
 
 print(args)
@@ -276,7 +276,7 @@ def train():
 
         val_start_time = time.time()
         val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
-        vak_end_time = time.time()
+        val_end_time = time.time()
         print(f"Validation time: {val_end_time - val_start_time}")
         write_log(f"Validation time: {val_end_time - val_start_time}\n")
 
