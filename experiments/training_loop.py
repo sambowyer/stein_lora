@@ -47,7 +47,7 @@ if args.sigma != "auto":
 
 def write_log(log):
     if args.write_job_logs:
-        with open(f"logs/{args.model}_{args.dataset_name}_{args.optimizer}_r{r}_K{K}_gamma{gamma}.log", "a") as f:
+        with open(f"logs/{args.model.replace("/", "--")}_{args.dataset_name}_{args.optimizer}_r{args.r}_K{args.K}_gamma{args.gamma}.log", "a") as f:
             f.write(log)
 
 print(args)
@@ -59,7 +59,7 @@ t.manual_seed(args.seed)
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}\n")
 
-write_log(f"Start at: {startasctime}\n{args}\nDevice: {device}\n")
+write_log(f"Start at: {startasctime}\n\n{args}\nDevice: {device}\n\n")
 
 # accelerator = Accelerator()
 
