@@ -273,6 +273,7 @@ def train():
 
         epoch_time = time.time() - epoch_start_time
         print(f"Epoch time: {epoch_time}")
+        write_log(f"Epoch time: {epoch_time}\n")
 
         val_start_time = time.time()
         val_loss, acc_per_particle, ensemble_acc, disagreements = run_eval(peft_model, eval_dataloader)#, metrics)
@@ -295,7 +296,7 @@ def train():
 train()
 
 print(f"Total time: {time.time() - start_time}")
-write_log(f"Total time: {time.time() - start_time}\n")
+write_log(f"\nTotal time: {time.time() - start_time}\n")
 
 if args.save_results:
     with open(f"results/{args.optimizer}_r{r}_K{K}_gamma{gamma}_sigma{sigma}.pkl", "wb") as f:
@@ -308,4 +309,4 @@ if device.type == 'cuda':
 
 endtime = time.asctime()
 print(f"Finished at: {endtime}")
-write_log(f"Finished at: {endtime}\n")
+write_log(f"\nFinished at: {endtime}\n")
