@@ -130,10 +130,8 @@ if args.optimizer == "adamw":
     optimizer = AdamW(peft_model.parameters(), lr=args.lr)
 elif args.optimizer == "sgd":
     optimizer = SGD(peft_model.parameters(), lr=args.lr)
-elif args.optimizer == "sadamw":
-    optimizer = SAdamW(peft_model.parameters(), lr=args.lr, sigma=sigma, gamma=gamma)
 elif args.optimizer == "svgd":
-    optimizer = SVGD(peft_model, lr=1e-3, sigma=sigma, gamma=gamma, base_optimizer=AdamW)
+    optimizer = SVGD(peft_model, lr=args.lr, sigma=sigma, gamma=gamma, base_optimizer=AdamW)
 else:
     raise ValueError(f"Unknown optimizer: {args.optimizer}")
 
