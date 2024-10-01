@@ -13,7 +13,7 @@ import time
 import pickle
 import cProfile
 
-from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD, SAdamW
+from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD
 
 startasctime = time.asctime()
 print(f"Start at: {startasctime}\n")
@@ -36,6 +36,8 @@ argparser.add_argument("--r", type=int, default=4)
 argparser.add_argument("--K", type=int, default=10)
 argparser.add_argument("--gamma", type=float, default=1e-2)
 argparser.add_argument("--sigma", type=str, default="auto")
+argparser.add_argument("--accelerate", type=AUTO_BOOL, default=False)
+argparser.add_argument("--grad_checkpointing", type=AUTO_BOOL, default=False)
 argparser.add_argument("--progress_bar", type=AUTO_BOOL, default=False)
 argparser.add_argument("--save_results", type=AUTO_BOOL, default=True)
 argparser.add_argument("--write_job_logs", type=AUTO_BOOL, default=False)
@@ -61,14 +63,14 @@ print(f"Device: {device}\n")
 
 write_log(f"Start at: {startasctime}\n\n{args}\nDevice: {device}\n\n")
 
-# accelerator = Accelerator()
+if args.accelerate:
+    accelerator = Accelerator()
 
 raw_datasets = load_dataset(args.dataset_path, args.dataset_name)
 checkpoint = args.model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 if "Llama" in args.model:
     tokenizer.pad_token = tokenizer.eos_token
-# tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
 # Note: we're only set up for MRPC right now
 assert args.dataset_name == "mrpc" and args.dataset_path == "glue"
@@ -101,6 +103,9 @@ model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_label
 if "Llama" in args.model:
     # model.config.pad_token_id = tokenizer.eos_token_id
     model.config.pad_token_id = model.config.eos_token_id
+
+if args.grad_checkpointing:
+    model.gradient_checkpointing_enable()
 
 K = args.K
 r = args.r
@@ -148,13 +153,8 @@ if args.lr_decay:
         num_training_steps=num_training_steps,
     )
 
-
-# peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
-
-# breakpoint() 
-
-# metrics = [evaluate.load("glue", "mrpc") for _ in range(K)]
-# metrics_avg = evaluate.load("glue", "mrpc")
+if args.accelerate:
+    peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
 
 stats = {
     "loss": [],
@@ -252,10 +252,13 @@ def train():
         for batch in train_dataloader:
             batch = {k: t.cat(K*[v]).to(device) for k, v in batch.items()}
 
-            # breakpoint()
             outputs = peft_model(**batch)
             loss = outputs.loss
-            loss.backward()
+
+            if args.accelerate:
+                accelerator.backward(loss)
+            else:
+                loss.backward()
 
             optimizer.step()
             optimizer.zero_grad()
