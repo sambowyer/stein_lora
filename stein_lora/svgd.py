@@ -28,6 +28,9 @@ class SVGD():
     def zero_grad(self):
         self.base_optimizer.zero_grad()
 
+    def accelerate_prepare(accelerator):
+        self.base_optimizer = accelerator.prepare(self.base_optimizer)
+
 @torch.enable_grad()
 def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     '''

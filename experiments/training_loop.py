@@ -154,7 +154,12 @@ if args.lr_decay:
     )
 
 if args.accelerate:
-    peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, optimizer, train_dataloader, eval_dataloader, lr_scheduler)
+    peft_model, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(peft_model, train_dataloader, eval_dataloader, lr_scheduler)
+    
+    if isinstance(optimizer, SVGD):
+        optimizer.accelerate_prepare(accelerator)
+    else:
+        optimizer = accelerator.prepare(optimizer)
 
 stats = {
     "loss": [],
