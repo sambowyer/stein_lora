@@ -36,6 +36,7 @@ argparser.add_argument("--r", type=int, default=4)
 argparser.add_argument("--K", type=int, default=10)
 argparser.add_argument("--gamma", type=float, default=1e-2)
 argparser.add_argument("--sigma", type=str, default="auto")
+argparser.add_argument("--damping_lambda", type=float, default=1)
 argparser.add_argument("--accelerate", type=AUTO_BOOL, default=False)
 argparser.add_argument("--grad_checkpointing", type=AUTO_BOOL, default=False)
 argparser.add_argument("--progress_bar", type=AUTO_BOOL, default=False)
@@ -54,12 +55,12 @@ def write_log(log):
 
 print(args)
 
-t.manual_seed(args.seed)
-
-# peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING['MultiLORA'] = MultiLoraModel
-
 device = t.device("cuda") if t.cuda.is_available() else t.device("cpu")
 print(f"Device: {device}\n")
+
+t.manual_seed(args.seed)
+if device.type == 'cuda': 
+    t.cuda.manual_seed(args.seed)
 
 write_log(f"Start at: {startasctime}\n\n{args}\nDevice: {device}\n\n")
 
@@ -98,10 +99,9 @@ eval_dataloader = DataLoader(
     tokenized_datasets["validation"], batch_size=args.batch_size, collate_fn=data_collator
 )
 
-# breakpoint()
+
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 if "Llama" in args.model:
-    # model.config.pad_token_id = tokenizer.eos_token_id
     model.config.pad_token_id = model.config.eos_token_id
 
 if args.grad_checkpointing:
@@ -114,29 +114,15 @@ r = args.r
 lora_config = MultiLoraConfig(r=r, K=K)#, init_lora_weights='pissa')
 peft_model = get_peft_model(model, lora_config)
 
-# breakpoint()
 
 peft_model.print_trainable_parameters()
-
-# loraA = []
-# loraB = []
-# for name, param in peft_model.named_parameters():
-#     if 'lora_A' in name:
-#         loraA.append(param)
-#     elif 'lora_B' in name:
-#         loraB.append(param)
-#
-
-sigma = args.sigma
-# kernel = RBF_kernel(sigma=sigma)
-gamma = args.gamma
 
 if args.optimizer == "adamw":
     optimizer = AdamW(peft_model.parameters(), lr=args.lr)
 elif args.optimizer == "sgd":
     optimizer = SGD(peft_model.parameters(), lr=args.lr)
 elif args.optimizer == "svgd":
-    optimizer = SVGD(peft_model, lr=args.lr, sigma=sigma, gamma=gamma, base_optimizer=AdamW)
+    optimizer = SVGD(peft_model, lr=args.lr, sigma=args.sigma, gamma=args.gamma, damping_lambda=args.damping_lambda, base_optimizer=AdamW)
 else:
     raise ValueError(f"Unknown optimizer: {args.optimizer}")
 
@@ -205,19 +191,6 @@ def run_eval(model, eval_dataloader, metrics=None):
         ensemble_acc += t.sum(predictions_avg == batch["labels"].reshape(K, -1)[0])
         acc_per_particle += t.sum(predictions == batch["labels"].reshape(K, -1), dim=-1)
 
-
-
-        # breakpoint()
-
-        # metrics_avg.add_batch(predictions=predictions_avg, references=batch["labels"].reshape(K, -1)[0])
-        
-        # for i, m in enumerate(metrics):
-        #     m.add_batch(predictions=predictions[i], references=batch["labels"].reshape(K, -1)[i])
-
-    # print(f"Total:  {metrics_avg.compute()}")
-    # for i, m in enumerate(metrics):
-    #     print(f"LORA_{i}: {m.compute()}")
-
     loss /= len(eval_dataloader.dataset) * 1.0
     acc_per_particle /= len(eval_dataloader.dataset) * 1.0
     ensemble_acc /= len(eval_dataloader.dataset) * 1.0
@@ -241,7 +214,7 @@ Ensemble acc: {ensemble_acc}\n""")
     return loss, acc_per_particle.cpu(), ensemble_acc.cpu(), disagreements.cpu()
 
 
-run_eval(peft_model, eval_dataloader)#, metrics)
+run_eval(peft_model, eval_dataloader)
 
 def train():
     for epoch in range(num_epochs):
@@ -305,7 +278,7 @@ print(f"Total time: {time.time() - start_time}")
 write_log(f"\nTotal time: {time.time() - start_time}\n")
 
 if args.save_results:
-    with open(f"results/{args.optimizer}_r{r}_K{K}_gamma{gamma}_sigma{sigma}.pkl", "wb") as f:
+    with open(f"results/{args.optimizer}_r{r}_K{K}_gamma{args.gamma}_sigma{args.sigma}.pkl", "wb") as f:
         pickle.dump(stats, f)
 
 if device.type == 'cuda': 

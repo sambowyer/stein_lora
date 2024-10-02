@@ -5,10 +5,16 @@ from .multi_lora import MultiLoraLayer, nn_ParallelLinear
 
 
 class SVGD():
-    def __init__(self, model, lr, sigma=1e-3, gamma=0.1, base_optimizer=AdamW, base_optimizer_kwargs={}):
+    def __init__(self, model, lr, sigma=1e-3, gamma=0.1, damping_lambda=1, base_optimizer=AdamW, base_optimizer_kwargs={}):
         self.sigma = sigma
         self.gamma = gamma
-        self.base_optimizer = base_optimizer(model.parameters(), lr=lr, **base_optimizer_kwargs)
+        self.damping_lambda = damping_lambda
+
+        self.lr = lr
+
+        self.base_optimizer = base_optimizer(model.parameters(),
+                                             lr=lr if lr > 0 else -lr, # hack to allow negative learning rates
+                                             **base_optimizer_kwargs)
 
         self.lora_weights = [(module.lora_A[model.active_adapter].weight, module.lora_B[model.active_adapter].weight) for module in model.modules() if isinstance(module, MultiLoraLayer)]
 
@@ -16,7 +22,11 @@ class SVGD():
 
     def step(self):
         for A, B in self.lora_weights:
-            update_A, update_B = svgd_step(A, B, self.sigma, self.gamma, e=self.step_count)
+            update_A, update_B = svgd_step(A, B, self.sigma, self.gamma, self.damping_lambda, e=self.step_count)
+
+            if self.lr < 0:
+                update_A *= -1
+                update_B *= -1
 
             A.grad = update_A
             B.grad = update_B
@@ -32,7 +42,7 @@ class SVGD():
         self.base_optimizer = accelerator.prepare(self.base_optimizer)
 
 @torch.enable_grad()
-def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
+def svgd_step(A : Tensor, B : Tensor, sigma, gamma, damping_lambda=1, e=-1):
     '''
     A: torch.Tensor of shape (K, r, d_in)
     B: torch.Tensor of shape (K, d_out, r)
@@ -97,18 +107,18 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, e=-1):
     update_A = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_A + A_log_prior_grad_) / K
     update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_B + B_log_prior_grad_) / K
 
+    # add damping term
+    update_A -= ((1 - damping_lambda) / K) * log_lik_grad_A
+    update_B -= ((1 - damping_lambda) / K) * log_lik_grad_B
+
     # then the repulsive force term 
     kernel_grad_A, kernel_grad_B = torch.autograd.grad(kernel_matrix.sum(), (A, B))
 
     rep_A = kernel_grad_A * gamma / K
     rep_B = kernel_grad_B * gamma / K
 
-    # hand-computed version of the above (which is off by a factor of 2*768*768...)
-    # rep_A = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((BtB.diagonal().permute(2,0,1) @ A) - (BtB @ A.unsqueeze(0)).transpose(0,1))).sum(0) / K
-    # rep_B = gamma * ((2*kernel_matrix/(sigma))[...,None,None] * ((B @ AAt.diagonal().permute(2,0,1)) - (B.unsqueeze(1) @ AAt))).sum(0) / K
-
-    update_A -= -rep_A
-    update_B -= -rep_B
+    update_A += rep_A
+    update_B += rep_B
 
     # print(f"ΔA ~ {update_A.abs().mean():.3g}, ΔB ~ {update_B.abs().mean():.3g}, sigma ~ {sigma:.3g}")
     # print(f" A ~ {A.abs().mean():.3g},  B ~ {B.abs().mean():.3g}")
