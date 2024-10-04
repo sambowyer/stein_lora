@@ -38,8 +38,12 @@ class SVGD():
     def zero_grad(self):
         self.base_optimizer.zero_grad()
 
-    def accelerate_prepare(accelerator):
-        self.base_optimizer = accelerator.prepare(self.base_optimizer)
+    def accelerate_prepare(self, accelerator, lr_scheduler=None):
+        if lr_scheduler is not None:
+            self.base_optimizer, lr_scheduler = accelerator.prepare(self.base_optimizer, lr_scheduler)
+            return lr_scheduler
+        else:
+            self.base_optimizer = accelerator.prepare(self.base_optimizer)
 
 @torch.enable_grad()
 def svgd_step(A : Tensor, B : Tensor, sigma, gamma, damping_lambda=1, e=-1):
@@ -66,9 +70,9 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, damping_lambda=1, e=-1):
 
     device = A.device
 
-    # get log likelihood (loss) gradients
-    log_lik_grad_A = A.grad.clone()
-    log_lik_grad_B = B.grad.clone()
+    # get negative log likelihood (loss) gradients
+    neg_log_lik_grad_A = A.grad.clone()
+    neg_log_lik_grad_B = B.grad.clone()
 
     # breakpoint()
     # reset grads
@@ -104,12 +108,12 @@ def svgd_step(A : Tensor, B : Tensor, sigma, gamma, damping_lambda=1, e=-1):
 
     # construct the updates
     # first the driving force term
-    update_A = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_A + A_log_prior_grad_) / K
-    update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, log_lik_grad_B + B_log_prior_grad_) / K
+    update_A = torch.einsum('ij,jkl->ikl', kernel_matrix, neg_log_lik_grad_A + A_log_prior_grad_) / K
+    update_B = torch.einsum('ij,jkl->ikl', kernel_matrix, neg_log_lik_grad_B + B_log_prior_grad_) / K
 
     # add damping term
-    update_A -= ((1 - damping_lambda) / K) * log_lik_grad_A
-    update_B -= ((1 - damping_lambda) / K) * log_lik_grad_B
+    update_A -= ((1 - damping_lambda) / K) * neg_log_lik_grad_A
+    update_B -= ((1 - damping_lambda) / K) * neg_log_lik_grad_B
 
     # then the repulsive force term 
     kernel_grad_A, kernel_grad_B = torch.autograd.grad(kernel_matrix.sum(), (A, B))
