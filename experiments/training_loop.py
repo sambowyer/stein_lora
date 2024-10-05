@@ -384,10 +384,12 @@ def test(model, test_dataloader, epoch=0):
 
 
 def run():
+    write_log("################################")
     write_log("Initial test run")
     test(peft_model, test_dataloader, epoch=0)
 
     for epoch in range(num_epochs):
+        write_log("\n################################")
         train(peft_model, train_dataloader, epoch=epoch)
 
         test(peft_model, test_dataloader, epoch=epoch+1)
@@ -395,7 +397,6 @@ def run():
         if args.save_model_every > 0 and (epoch+1) % args.save_model_every == 0:
             peft_model.save_pretrained(f"{models_dir}/{config_str}_epoch{epoch}")
 
-        print()
         # breakpoint()
 
 run()
