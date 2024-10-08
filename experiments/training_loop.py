@@ -330,7 +330,7 @@ def train(model, train_dataloader, epoch=0):
 
     for key, val in stats.items():
         if "train" in key:
-            stats[key] /= len(train_dataloader.dataset) * 1.0
+            stats[key] /= len(train_dataloader) * 1.0 # not len(train_dataloader.dataset) * 1.0 because we want to average per-batch
 
     stats_str = get_stats_str(train=True, epoch=epoch)
     write_log(stats_str)
