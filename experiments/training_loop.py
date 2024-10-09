@@ -5,8 +5,7 @@ from torch.optim import AdamW, SGD
 from torch.utils.data import DataLoader
 from torch.distributions import Categorical
 from tqdm.auto import tqdm
-from peft import LoraConfig, get_peft_model
-from peft import PeftType
+from peft import LoraConfig, get_peft_model, PeftType
 from accelerate import Accelerator
 import argparse
 import time

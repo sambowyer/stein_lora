@@ -33,8 +33,9 @@ class MultiLoraConfig(LoraConfig):
         super().__post_init__()
         self.peft_type = "MultiLORA"
 
-        from peft import peft_model
+        from peft import peft_model, mapping
         peft_model.PEFT_TYPE_TO_MODEL_MAPPING[self.peft_type] = MultiLoraModel
+        mapping.PEFT_TYPE_TO_CONFIG_MAPPING[self.peft_type] = MultiLoraConfig
 
 
 class MultiLoraModel(LoraModel):
