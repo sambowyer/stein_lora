@@ -13,7 +13,7 @@ import pickle
 import cProfile
 import os
 
-from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD
+from stein_lora import MultiLoraConfig, MultiLoraModel, SVGD, save_multilora_weights
 from utils import get_dataloader
 
 startasctime = time.asctime()
@@ -394,7 +394,8 @@ def run():
         test(peft_model, test_dataloader, epoch=epoch+1)
 
         if args.save_model_every > 0 and (epoch+1) % args.save_model_every == 0:
-            peft_model.save_pretrained(f"{models_dir}/{config_str}_epoch{epoch}")
+            # peft_model.save_pretrained(f"{models_dir}/{config_str}_epoch{epoch}")
+            save_multilora_weights(peft_model, f"{models_dir}/{config_str}_epoch{epoch}")
 
         # breakpoint()
 

@@ -1,4 +1,4 @@
-from stein_lora import MultiLoraConfig, MultiLoraModel
+from stein_lora import MultiLoraConfig, MultiLoraModel, save_multilora_weights, apply_saved_multilora_weights
 import peft
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
@@ -26,13 +26,26 @@ lora_model.save_pretrained("temp/lora_model")
 # load the lora model
 lora_model2 = AutoModelForCausalLM.from_pretrained("temp/lora_model").to(device) 
 
+# check if the two models are the same
+assert lora_model.config == lora_model2.config
+# assert lora_model.state_dict() == lora_model2.state_dict()
 
-# breakpoint()
-
-multi_lora_model.peft_config['default'].peft_type = peft.PeftType.LORA
+assert all(t.allclose(x,y) for x,y in zip([lora_model.state_dict()[x] for x in lora_model.state_dict()],
+                                 [lora_model2.state_dict()[x] for x in lora_model2.state_dict()]))
 
 # save the multi-lora model
-multi_lora_model.save_pretrained("temp/multi_lora_model")
+save_multilora_weights(multi_lora_model, "temp/multi_lora_model")
+# multi_lora_model.save_pretrained("temp/multi_lora_model")
 
 # load the multi-lora model
-multi_lora_model2 = AutoModelForCausalLM.from_pretrained("temp/multi_lora_model").to(device)
+# multi_lora_model2 = AutoModelForCausalLM.from_pretrained("temp/multi_lora_model").to(device)
+base_model_temp = AutoModelForCausalLM.from_pretrained("gpt2").to(device)
+multi_lora_model2 = apply_saved_multilora_weights(base_model_temp, "temp/multi_lora_model")
+
+
+# compare the two models
+assert multi_lora_model.config == multi_lora_model2.config
+# assert multi_lora_model.state_dict() == multi_lora_model2.state_dict()
+
+assert all(t.allclose(x,y) for x,y in zip([multi_lora_model.state_dict()[x]  for x in multi_lora_model.state_dict()],
+                                          [multi_lora_model2.state_dict()[x] for x in multi_lora_model2.state_dict()]))
