@@ -59,7 +59,7 @@ if args.sigma != "auto":
 if args.model == "bert-base-uncased":
     short_model_name = "bert"
 elif 'Llama' in args.model:
-    short_model_name = "llama"
+    short_model_name = args.model.replace("meta-llama/", "").replace("Meta-", "")
 
 config_str = f"{short_model_name}_{args.dataset_name}_{args.optimizer}_r{args.r}_K{args.K}_gamma{args.gamma}_lr{args.lr}_seed{args.seed}"
 
