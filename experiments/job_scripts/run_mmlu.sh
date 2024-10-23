@@ -4,8 +4,6 @@ device=rtx_3090
 memory=62
 hours=8
 
-#### HASN'T BEEN RUN YET !!
-
 # for dataset_name in mmlu__STEM mmlu__humanities mmlu__social_sciences
 # do
     
