@@ -164,3 +164,8 @@ cython_debug/
 
 # slurm
 *.o
+
+
+
+*.pkl
+*.pt
