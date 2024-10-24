@@ -51,7 +51,7 @@ for filename in os.listdir(pca_dir):
         num_components_95 = np.argmax(cumulative_variance >= 0.95) + 1
         num_components_99 = np.argmax(cumulative_variance >= 0.99) + 1
 
-        cumulative_variance_dict[r].append((num_components_80, num_components_90, num_components_95, num_components_99))
+        cumulative_variance_dict[r].append([num_components_80, num_components_90, num_components_95, num_components_99])
 
 
         # Plot the explained variance per principal component
@@ -68,8 +68,7 @@ for filename in os.listdir(pca_dir):
         plt.close()
 
 # average the cumulative variance numbers over seeds and represent with numpy (by stacking)
-cumulative_variance_dict_np = {r: np.stack(cumulative_variance_dict[r]).mean(1) for r in cumulative_variance_dict if ".pkl" not in r}
-
+cumulative_variance_dict_np = {r: np.stack(cumulative_variance_dict[r]).mean(0) for r in cumulative_variance_dict if ".pkl" not in r}
 rs = [int(r) for r in list(cumulative_variance_dict_np.keys())]
 rs.sort()
 cumulative_variance_numbers = np.stack([cumulative_variance_dict_np[str(r)] for r in rs])
@@ -80,7 +79,7 @@ plt.plot(rs, cumulative_variance_numbers[:, 0], marker='o', label='80%')
 plt.plot(rs, cumulative_variance_numbers[:, 1], marker='o', label='90%')
 plt.plot(rs, cumulative_variance_numbers[:, 2], marker='o', label='95%')
 plt.plot(rs, cumulative_variance_numbers[:, 3], marker='o', label='99%')
-plt.title('Number of Components Needed to Explain Cumulative Variance')
+plt.title('Number of Components Needed to Explain Cumulative Variance\n(dimensions=768)')
 plt.xlabel('LORA Rank r')
 plt.xticks(rs)
 plt.ylabel('Number of Components')
